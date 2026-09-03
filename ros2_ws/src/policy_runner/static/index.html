@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robot Data Monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Robot Data Monitor</h1>
+    <div class="system-state">
+      <span id="onlineSummary">0 / 0 online</span>
+      <span id="lastUpdated">--</span>
+    </div>
+  </header>
+  <main>
+    <section class="workspace">
+      <div class="camera-groups">
+        <section class="camera-group external-group">
+          <div class="camera-group-heading"><h2>External views</h2></div>
+          <div class="external-grid" id="externalGrid"></div>
+        </section>
+        <section class="camera-group wrist-group">
+          <div class="camera-group-heading"><h2>Wrist cameras</h2></div>
+          <div class="wrist-grid" id="wristGrid"></div>
+        </section>
+      </div>
+      <aside class="tactile-panel">
+        <section class="right-camera-section">
+          <div class="section-heading"><h2>Right view</h2></div>
+          <div class="right-grid" id="rightGrid"></div>
+        </section>
+        <section class="tactile-section">
+          <div class="section-heading"><h2>Fingertip cameras</h2></div>
+          <div class="tactile-grid" id="tactileGrid"></div>
+        </section>
+        <div class="trajectory-status">
+          <h2>Joint-state trajectories</h2>
+          <div id="jointStreams"></div>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

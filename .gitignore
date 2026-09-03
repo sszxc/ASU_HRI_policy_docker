@@ -1,0 +1,11 @@
+# colcon build output (src is the only part that's source)
+build/
+install/
+log/
+
+__pycache__/
+*.pyc
+
+# large caches/local data, not part of the project backup
+.cache/
+.local/

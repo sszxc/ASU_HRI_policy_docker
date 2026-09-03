@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>lan_udp_transport</transport_id>
+                <type>UDPv4</type>
+                <sendBufferSize>12582912</sendBufferSize>
+                <receiveBufferSize>12582912</receiveBufferSize>
+                <interfaceWhiteList>
+                    <address>192.168.1.26</address>
+                </interfaceWhiteList>
+                <!-- Announce to participant IDs 0..31, not just 0..3: peers run
+                     several ROS processes and a new shell/daemon there gets a
+                     higher participant ID and would otherwise never hear us. -->
+                <maxInitialPeersRange>32</maxInitialPeersRange>
+            </transport_descriptor>
+            <!-- Shared memory for same-host participants; cross-PC traffic uses
+                 lan_udp_transport. Needs a shared /dev/shm (containers: ipc=host). -->
+            <transport_descriptor>
+                <transport_id>shm_transport</transport_id>
+                <type>SHM</type>
+                <segment_size>10485760</segment_size>
+            </transport_descriptor>
+        </transport_descriptors>
+
+        <participant profile_name="lan_participant" is_default_profile="true">
+            <rtps>
+                <!-- Participant-level buffers are the knob that actually reaches
+                     the sockets; the per-transport ones above did not. -->
+                <sendSocketBufferSize>12582912</sendSocketBufferSize>
+                <listenSocketBufferSize>12582912</listenSocketBufferSize>
+                <!-- SHM MUST be first: Fast DDS prefers transports in declaration
+                     order. With UDP first, same-host streams use UDP loopback and
+                     overflow socket buffers while SHM segments sit unused. -->
+                <userTransports>
+                    <transport_id>shm_transport</transport_id>
+                    <transport_id>lan_udp_transport</transport_id>
+                </userTransports>
+                <useBuiltinTransports>false</useBuiltinTransports>
+                <builtin>
+                    <initialPeersList>
+                        <locator><udpv4><address>192.168.1.1</address></udpv4></locator>
+                        <locator><udpv4><address>192.168.1.10</address></udpv4></locator>
+                        <locator><udpv4><address>192.168.1.12</address></udpv4></locator>
+                        <locator><udpv4><address>192.168.1.25</address></udpv4></locator>
+                        <locator><udpv4><address>192.168.1.27</address></udpv4></locator>
+                    </initialPeersList>
+                </builtin>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>

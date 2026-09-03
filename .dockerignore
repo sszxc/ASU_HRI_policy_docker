@@ -1,0 +1,7 @@
+# build.sh uses the repo root as docker context with --no-cache; keep git
+# objects, sources, and colcon artifacts out of every build.
+.git/
+src/
+build/
+install/
+log/

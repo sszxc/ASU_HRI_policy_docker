@@ -1,0 +1,51 @@
+# Camera + joint-state topics for the live data-availability monitor
+# (policy_runner web_monitor node) and, later, ACT inference input.
+#
+# Verified live against univ.perception's actual "avatar" rig (right UR arm
+# + dexterous hand) on 2026-09-02 (see README "Live data-availability
+# monitor"): `/joint_states` (24 names, RELIABLE QoS) is the training
+# robot's combined joint state. Of the 5 candidate cameras under
+# /avatar/..., camera100 was NOT publishing when checked; camera101,
+# camera102, side_cam, and wrist_cam were live at ~30Hz (BEST_EFFORT).
+# `group` below only controls which panel a camera renders in (see
+# static/index.html) -- it is not ROS metadata. None of the cameras carry a
+# `left`/`top` label anywhere in ROS, so this cannot say which two are the
+# `aloha_scripts/constants.py` training pair; check the live preview and
+# rename entries once that's known.
+
+web:
+  host: 0.0.0.0
+  port: 8080
+
+image_transport: compressed   # raw | compressed -- raw drops frames with 5
+                               # simultaneous cameras on this rig (see README
+                               # "Live data-availability monitor" debug notes)
+preview_fps: 10.0
+online_timeout_seconds: 3.0
+
+# group: external | wrist | right | tactile -- selects which panel in
+# static/index.html the camera's tile renders in. A panel with no cameras
+# assigned just renders empty.
+cameras:
+  camera100:
+    group: external
+    topic: /avatar/camera100/camera100/color/image_raw
+  camera101:
+    group: external
+    topic: /avatar/camera101/camera101/color/image_raw
+  camera102:
+    group: external
+    topic: /avatar/camera102/camera102/color/image_raw
+  wrist_cam:
+    group: wrist
+    topic: /avatar/right_arm/wrist_cam/wrist_cam/color/image_raw
+  side_cam:
+    group: wrist
+    topic: /avatar/right_arm/wrist_cam/side_cam/color/image_raw
+
+joint_states:
+  joint_states:
+    topic: /joint_states
+    qos:
+      reliability: reliable   # reliable | best_effort
+      depth: 10
