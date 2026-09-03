@@ -2,8 +2,9 @@
 `real_pick_yellow_bottle` checkpoint was trained on, runs ACT at a fixed control_hz,
 and writes the policy's raw joint-target output straight into a MuJoCo model's qpos
 for visualization, alongside a translucent "shadow" duplicate of the robot driven by
-the real observed qpos (the policy's own input) for a real-vs-target overlay -- no
-UDP output, no actuators/mj_step, no real-robot control.
+the real observed qpos (the policy's own input) for a real-vs-target overlay. The
+same action is also broadcast over UDP as JSON for real-robot control -- no
+actuators/mj_step here, that step happens on the receiving machine.
 
 This is the inference half of README "Next phase" with the real-robot-output stage
 swapped for a MuJoCo viewer (a visualize-before-you-command dev step). Camera/
@@ -30,7 +31,8 @@ from sensor_msgs.msg import CompressedImage, JointState
 
 from policy_runner.act_model import ACTChunkPolicy
 from policy_runner.image_codec import decode_compressed_color
-from policy_runner.mujoco_qpos_viz import MujocoQposViz
+from policy_runner.mujoco_qpos_viz import JOINT_ORDER, MujocoQposViz
+from policy_runner.udp_joint_sender import UdpJointSender
 from policy_runner.web_monitor import load_config
 
 
@@ -117,6 +119,9 @@ def parse_args(args=None):
     parser.add_argument(
         "--no-viewer", action="store_true", help="run inference without opening the MuJoCo viewer window"
     )
+    parser.add_argument("--udp-host", default="", help="override act_inference.udp_output.host")
+    parser.add_argument("--udp-port", type=int, default=0, help="override act_inference.udp_output.port")
+    parser.add_argument("--no-udp", action="store_true", help="disable UDP joint output entirely")
     return parser.parse_known_args(args)[0]
 
 
@@ -143,6 +148,20 @@ def main(args=None):
     )
     viz = MujocoQposViz(act_cfg["mjcf_path"], launch_viewer=not cli.no_viewer)
 
+    udp_sender = None
+    if not cli.no_udp:
+        udp_cfg = act_cfg.get("udp_output", {}) or {}
+        udp_host = cli.udp_host or udp_cfg.get("host", "")
+        udp_port = cli.udp_port or int(udp_cfg.get("port", 0) or 0)
+        if udp_host and udp_port:
+            udp_sender = UdpJointSender(udp_host, udp_port, JOINT_ORDER)
+            print(f"[act_infer_mujoco] UDP joint output -> {udp_host}:{udp_port}")
+        else:
+            print(
+                "[act_infer_mujoco] UDP joint output enabled but no host/port configured -- skipping "
+                "(set act_inference.udp_output in topics.yaml, or pass --udp-host/--udp-port)"
+            )
+
     rclpy.init(args=args)
     node = InferInputNode(config)
     executor = MultiThreadedExecutor(num_threads=max(4, len(node.camera_names) + 2))
@@ -163,6 +182,8 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                if udp_sender is not None:
+                    udp_sender.send(action)
                 if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
                     infer_idx += 1
                     print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")
@@ -179,6 +200,8 @@ def main(args=None):
         pass
     finally:
         viz.close()
+        if udp_sender is not None:
+            udp_sender.close()
         executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
