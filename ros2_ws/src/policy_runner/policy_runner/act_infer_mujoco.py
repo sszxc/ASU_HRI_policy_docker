@@ -151,6 +151,7 @@ def main(args=None):
     spin_thread.start()
 
     period_s = 1.0 / control_hz
+    step = 0
     try:
         next_tick = time.monotonic()
         while rclpy.ok() and viz.is_running():
@@ -162,7 +163,8 @@ def main(args=None):
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
                 status = "INFER" if policy.did_infer else "cache"
-                print(f"\r[act_infer_mujoco] {status}", end="", flush=True)
+                print(f"\r[act_infer_mujoco] step={step:6d} {status}", end="", flush=True)
+                step += 1
             viz.sync()
             next_tick += period_s
             sleep_s = next_tick - time.monotonic()
