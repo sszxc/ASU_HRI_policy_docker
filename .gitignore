@@ -9,3 +9,6 @@ __pycache__/
 # large caches/local data, not part of the project backup
 .cache/
 .local/
+
+# Claude Code local worktree state, not part of the project source
+.claude/worktrees/

@@ -182,12 +182,12 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 if udp_sender is not None:
-                    udp_sender.send(action)
+                    udp_sender.send(action, sequence=action_idx)
                 if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
                     infer_idx += 1
                     print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")
-                action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 print(f"\r[act_infer_mujoco] action #{action_idx:6d}", end="", flush=True)
             viz.sync()
             next_tick += period_s

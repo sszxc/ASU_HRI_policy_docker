@@ -5,7 +5,6 @@ expected to just consume the latest packet each control tick.
 
 import json
 import socket
-import time
 
 
 class UdpJointSender:
@@ -15,11 +14,10 @@ class UdpJointSender:
         self.joint_names = list(joint_names)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    def send(self, positions):
+    def send(self, positions, sequence):
         payload = {
-            "timestamp": time.time(),
-            "joint_names": self.joint_names,
-            "positions": [float(p) for p in positions],
+            "sequence": sequence,
+            "positions": {name: float(p) for name, p in zip(self.joint_names, positions)},
         }
         self.sock.sendto(json.dumps(payload).encode("utf-8"), (self.host, self.port))
 

@@ -65,13 +65,15 @@ act_inference:
   # chunk open-loop -- cheap, but action can visibly "step" at each requery.
   # true: query every step and blend overlapping chunk predictions (exponential decay,
   # see act_model.py) for smoother output, at chunk_size-x inference cost.
-  temporal_agg: false
+  temporal_agg: true
   temporal_agg_k: 0.01   # only used when temporal_agg: true -- larger = weights older buffered
                           # chunks more heavily; 0 = uniform average across buffered chunks
   # Paths as seen INSIDE the container (docker/run/run_docker.sh mounts host
   # ~/code/act -> ~/act and host ~/code/Honda_proto5_description ->
   # ~/Honda_proto5_description; this node only ever runs in-container).
-  ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_aggressive/policy_best.ckpt
+  
+  # ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_aggressive/policy_best.ckpt
+  ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_hedge/policy_best.ckpt
   act_repo_root: /home/asu/act
   mjcf_path: /home/asu/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_template_joint_ctrl.xml
   # UDP output of the predicted action (JOINT_ORDER from mujoco_qpos_viz.py) as
@@ -79,5 +81,5 @@ act_inference:
   # LAN robot-control host. Leave host blank to disable until configured (or
   # override both with --udp-host/--udp-port; --no-udp disables outright).
   udp_output:
-    host: "172.17.40.68"
+    host: "192.168.1.12"
     port: 6000
