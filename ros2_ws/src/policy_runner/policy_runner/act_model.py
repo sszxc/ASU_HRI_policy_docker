@@ -87,6 +87,8 @@ class ACTChunkPolicy:
         self._chunk_buffer = deque(maxlen=self.chunk_size)  # temporal_agg only: [(start_step, chunk), ...]
         self._step = 0  # temporal_agg only: running query counter
 
+        self.did_infer = False  # set by next_action(): True if this call queried the model
+
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
@@ -113,7 +115,8 @@ class ACTChunkPolicy:
         return self._next_action_chunked(qpos, images_by_camera)
 
     def _next_action_chunked(self, qpos, images_by_camera):
-        if self._chunk is None or self._chunk_step >= self.chunk_size:
+        self.did_infer = self._chunk is None or self._chunk_step >= self.chunk_size
+        if self.did_infer:
             self._chunk = self._query_chunk(qpos, images_by_camera)
             self._chunk_step = 0
         raw_action = self._chunk[self._chunk_step]
@@ -125,6 +128,7 @@ class ACTChunkPolicy:
         buffered chunk, weighted by exp(-k * age) with age counted oldest-chunk-first
         (older chunks get the larger weight) -- same scheme as `act/imitate_episodes.py`
         eval_bc()'s `--temporal_agg` path."""
+        self.did_infer = True  # always queries -- kept for a uniform did_infer check regardless of mode
         chunk = self._query_chunk(qpos, images_by_camera)
         step = self._step
         self._chunk_buffer.append((step, chunk))

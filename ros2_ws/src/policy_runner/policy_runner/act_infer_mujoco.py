@@ -161,6 +161,8 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                status = "INFER" if policy.did_infer else "cache"
+                print(f"\r[act_infer_mujoco] {status}", end="", flush=True)
             viz.sync()
             next_tick += period_s
             sleep_s = next_tick - time.monotonic()
