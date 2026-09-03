@@ -1,7 +1,9 @@
 """ACT inference node: subscribes the `left`/`top` camera + joint_states topics the
 `real_pick_yellow_bottle` checkpoint was trained on, runs ACT at a fixed control_hz,
 and writes the policy's raw joint-target output straight into a MuJoCo model's qpos
-for visualization -- no UDP output, no actuators/mj_step, no real-robot control.
+for visualization, alongside a translucent "shadow" duplicate of the robot driven by
+the real observed qpos (the policy's own input) for a real-vs-target overlay -- no
+UDP output, no actuators/mj_step, no real-robot control.
 
 This is the inference half of README "Next phase" with the real-robot-output stage
 swapped for a MuJoCo viewer (a visualize-before-you-command dev step). Camera/
@@ -153,7 +155,7 @@ def main(args=None):
             else:
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
-                viz.set_qpos(action)
+                viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
             viz.sync()
             next_tick += period_s
             sleep_s = next_tick - time.monotonic()
