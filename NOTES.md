@@ -203,9 +203,11 @@ the still-unbuilt UDP-to-real-robot stage.
   checkpoint the same way `imitate_episodes.py`'s `eval_bc()` does: task
   config from `aloha_scripts/constants.py` via the checkpoint's own
   `config_hydra_resolved.yaml`, weights from the `.ckpt`, normalization from
-  `dataset_stats.pkl`; buffers one action chunk at a time, re-querying the
-  model every `chunk_size` steps -- the default non-`--temporal_agg`
-  behavior), `policy_runner/mujoco_qpos_viz.py` (`MujocoQposViz` -- loads the
+  `dataset_stats.pkl`; two chunking modes selected by `temporal_agg`: off
+  (default) buffers one action chunk at a time, re-querying the model every
+  `chunk_size` steps; on queries every step and blends overlapping chunk
+  predictions with an exponentially decaying weight -- same as `eval_bc()`'s
+  `--temporal_agg` path, chunk_size-x the inference cost), `policy_runner/mujoco_qpos_viz.py` (`MujocoQposViz` -- loads the
   MJCF, maps a 24-dim action straight onto `qpos` by joint name, calls
   `mj_forward`, drives a `mujoco.viewer.launch_passive` window),
   `policy_runner/act_infer_mujoco.py` (the ROS2 node + entry point: same
@@ -216,8 +218,10 @@ the still-unbuilt UDP-to-real-robot stage.
 - **Config:** `act_inference:` block in `config/topics.yaml` --
   `camera_names` (order matters, must match the trained task's
   `camera_names`), `camera_topic_map` (logical name -> key under `cameras:`),
-  `control_hz`, `ckpt_path`, `act_repo_root`, `mjcf_path` (all three as seen
-  **inside the container** -- see "Mounts" above).
+  `control_hz`, `temporal_agg` (bool, default off), `temporal_agg_k` (decay
+  rate, only used when `temporal_agg: true`), `ckpt_path`, `act_repo_root`,
+  `mjcf_path` (all three as seen **inside the container** -- see "Mounts"
+  above).
 - **Joint order / qpos mapping (unverified against the live rig):** the
   given MJCF's arm+hand actuator include order (6 UR joints + `WRZ`/`WRY` +
   4 fingers x 4 joints = 24) produces a plain `qpos[0..23]` layout with no

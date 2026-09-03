@@ -61,6 +61,13 @@ act_inference:
     left: camera100
     top: camera102
   control_hz: 30.0
+  # false (default): query the model once every chunk_size steps, serve the buffered
+  # chunk open-loop -- cheap, but action can visibly "step" at each requery.
+  # true: query every step and blend overlapping chunk predictions (exponential decay,
+  # see act_model.py) for smoother output, at chunk_size-x inference cost.
+  temporal_agg: false
+  temporal_agg_k: 0.01   # only used when temporal_agg: true -- larger = weights older buffered
+                          # chunks more heavily; 0 = uniform average across buffered chunks
   # Paths as seen INSIDE the container (docker/run/run_docker.sh mounts host
   # ~/code/act -> ~/act and host ~/code/Honda_proto5_description ->
   # ~/Honda_proto5_description; this node only ever runs in-container).
