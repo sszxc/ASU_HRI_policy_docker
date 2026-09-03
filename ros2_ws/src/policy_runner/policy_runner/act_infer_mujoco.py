@@ -151,7 +151,8 @@ def main(args=None):
     spin_thread.start()
 
     period_s = 1.0 / control_hz
-    step = 0
+    action_idx = 0
+    infer_idx = 0
     try:
         next_tick = time.monotonic()
         while rclpy.ok() and viz.is_running():
@@ -162,9 +163,11 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
-                status = "INFER" if policy.did_infer else "cache"
-                print(f"\r[act_infer_mujoco] step={step:6d} {status}", end="", flush=True)
-                step += 1
+                if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
+                    infer_idx += 1
+                    print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")
+                action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
+                print(f"\r[act_infer_mujoco] action #{action_idx:6d}", end="", flush=True)
             viz.sync()
             next_tick += period_s
             sleep_s = next_tick - time.monotonic()
