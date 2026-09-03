@@ -1,5 +1,6 @@
-"""Push an ACT action straight into a MuJoCo model's qpos and render it -- no
-actuators, no `mj_step`, no physics. Forward-kinematics-only visualization.
+"""Push an ACT action (and optionally the real robot's observed qpos, as a shadow
+overlay) straight into a MuJoCo model's qpos and render it -- no actuators, no
+`mj_step`, no physics. Forward-kinematics-only visualization.
 """
 
 import mujoco
@@ -23,21 +24,34 @@ JOINT_ORDER = [
     "RHand_T1Z_joint", "RHand_T1Y_joint", "RHand_T2Y_joint", "RHand_T3Y_joint",
 ]
 
+# The scene template also carries a translucent, collision-free "Shadow_" duplicate
+# of the same 24 joints (see the MJCF's shadow-robot block) used to overlay the real
+# robot's observed qpos next to the policy's predicted action. Same order, same
+# caveat about not being cross-checked against a live /joint_states message.
+SHADOW_JOINT_ORDER = [f"Shadow_{name}" for name in JOINT_ORDER]
+
 
 class MujocoQposViz:
     def __init__(self, mjcf_path, launch_viewer=True):
         self.model = mujoco.MjModel.from_xml_path(mjcf_path)
         self.data = mujoco.MjData(self.model)
-        if len(JOINT_ORDER) != self.model.nq:
-            raise ValueError(f"JOINT_ORDER has {len(JOINT_ORDER)} joints but model nq={self.model.nq}")
+        expected_nq = len(JOINT_ORDER) + len(SHADOW_JOINT_ORDER)
+        if expected_nq != self.model.nq:
+            raise ValueError(f"expected nq={expected_nq} (main + shadow joints) but model nq={self.model.nq}")
         self.qpos_addr = np.array([self.model.joint(name).qposadr[0] for name in JOINT_ORDER])
+        self.shadow_qpos_addr = np.array([self.model.joint(name).qposadr[0] for name in SHADOW_JOINT_ORDER])
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data) if launch_viewer else None
 
-    def set_qpos(self, action):
+    def set_qpos(self, action, shadow_qpos=None):
         action = np.asarray(action, dtype=np.float64)
         if action.shape[0] != len(JOINT_ORDER):
             raise ValueError(f"expected {len(JOINT_ORDER)}-dim action, got {action.shape}")
         self.data.qpos[self.qpos_addr] = action
+        if shadow_qpos is not None:
+            shadow_qpos = np.asarray(shadow_qpos, dtype=np.float64)
+            if shadow_qpos.shape[0] != len(SHADOW_JOINT_ORDER):
+                raise ValueError(f"expected {len(SHADOW_JOINT_ORDER)}-dim shadow_qpos, got {shadow_qpos.shape}")
+            self.data.qpos[self.shadow_qpos_addr] = shadow_qpos
         mujoco.mj_forward(self.model, self.data)  # kinematics only -- no mj_step, no ctrl
 
     def sync(self):
