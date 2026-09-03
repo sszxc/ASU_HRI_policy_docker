@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "web_monitor = policy_runner.web_monitor:main",
+            "act_infer_mujoco = policy_runner.act_infer_mujoco:main",
         ],
     },
 )

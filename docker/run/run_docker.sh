@@ -150,6 +150,10 @@ docker_cmd+=(
 	# with host edits/git ops, and checkpoints written to results/ land
 	# directly on host disk.
 	--volume="/home/$USER/code/act:${CONTAINER_HOME}/act:rw"
+	# Robot MJCF/URDF description (act_infer_mujoco node's visualization target),
+	# same pattern as the act mount above: lives outside this workspace repo, so
+	# it's bind-mounted rather than copied in.
+	--volume="/home/$USER/code/Honda_proto5_description:${CONTAINER_HOME}/Honda_proto5_description:rw"
 	--volume="/etc/timezone:/etc/timezone:ro"
 	--volume="/etc/localtime:/etc/localtime:ro"
 	--volume="/home/$USER/.ssh:/home/$USER/.ssh:rw"

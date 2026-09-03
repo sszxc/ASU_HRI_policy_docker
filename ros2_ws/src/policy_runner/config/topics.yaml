@@ -1,5 +1,5 @@
 # Camera + joint-state topics for the live data-availability monitor
-# (policy_runner web_monitor node) and, later, ACT inference input.
+# (policy_runner web_monitor node) and ACT inference input (act_infer_mujoco node).
 #
 # Verified live against univ.perception's actual "avatar" rig (right UR arm
 # + dexterous hand) on 2026-09-02 (see README "Live data-availability
@@ -9,9 +9,9 @@
 # camera102, side_cam, and wrist_cam were live at ~30Hz (BEST_EFFORT).
 # `group` below only controls which panel a camera renders in (see
 # static/index.html) -- it is not ROS metadata. None of the cameras carry a
-# `left`/`top` label anywhere in ROS, so this cannot say which two are the
-# `aloha_scripts/constants.py` training pair; check the live preview and
-# rename entries once that's known.
+# `left`/`top` label anywhere in ROS; confirmed with the user (2026-09-03):
+# camera100 = left, camera101 = right (unused by this policy), camera102 =
+# top. See `act_inference.camera_topic_map` below.
 
 web:
   host: 0.0.0.0
@@ -49,3 +49,21 @@ joint_states:
     qos:
       reliability: reliable   # reliable | best_effort
       depth: 10
+
+# act_infer_mujoco node: ACT inference driving a MuJoCo model's qpos directly
+# (visualization only -- no actuators/mj_step, no UDP command to the real robot).
+act_inference:
+  # Order matters -- must match the trained task's camera_names
+  # (aloha_scripts/constants.py TASK_CONFIGS["real_pick_yellow_bottle"]).
+  camera_names: [left, top]
+  # logical camera_names entry -> key under `cameras:` above
+  camera_topic_map:
+    left: camera100
+    top: camera102
+  control_hz: 30.0
+  # Paths as seen INSIDE the container (docker/run/run_docker.sh mounts host
+  # ~/code/act -> ~/act and host ~/code/Honda_proto5_description ->
+  # ~/Honda_proto5_description; this node only ever runs in-container).
+  ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_aggressive/policy_best.ckpt
+  act_repo_root: /home/asu/act
+  mjcf_path: /home/asu/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_template_joint_ctrl.xml

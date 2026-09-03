@@ -4,11 +4,13 @@
   <name>policy_runner</name>
   <version>0.0.1</version>
   <description>
-    Subscribes camera images + joint_states over ROS2 (rclpy) and serves a
-    browser page (web_monitor) showing which streams are live, adapted from
+    web_monitor: subscribes camera images + joint_states over ROS2 (rclpy) and
+    serves a browser page showing which streams are live, adapted from
     trajectory_recorder's capture console minus the recording pipeline.
-    This is the subscriber half of the ACT inference node planned in the
-    repo README ("Next phase"), built and verified here first.
+    act_infer_mujoco: runs ACT inference on those same live camera/joint
+    topics at a fixed rate and writes the resulting action straight into a
+    MuJoCo model's qpos for visualization (no actuators/mj_step, no UDP
+    output to the real robot yet) -- see repo README.
   </description>
   <maintainer email="im.zhangxc@gmail.com">asu</maintainer>
   <license>TODO</license>
