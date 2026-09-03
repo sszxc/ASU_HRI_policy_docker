@@ -193,13 +193,15 @@ installed `config/topics.yaml` in this package's share dir). `--raw` /
 
 `ros2_ws/src/policy_runner`'s `act_infer_mujoco` node subscribes the live
 `left`/`top` cameras + `/joint_states`, runs ACT inference at a fixed 30Hz,
-and writes the policy's raw joint-target output straight into a MuJoCo
-model's `qpos` for visualization. **No actuators, no `mj_step` (no physics
-stepping at all -- forward kinematics only via `mj_forward`), no UDP output
-to the real robot yet.** This is a look-before-you-command dev step ahead of
-the still-unbuilt UDP-to-real-robot stage.
+writes the policy's raw joint-target output straight into a MuJoCo model's
+`qpos` for visualization (**no actuators, no `mj_step`** -- forward
+kinematics only via `mj_forward`), and broadcasts the same action over UDP
+as JSON for real-robot control (see "UDP joint output" below).
 
-- **Files:** `policy_runner/act_model.py` (`ACTChunkPolicy` -- loads the
+- **Files:** `policy_runner/udp_joint_sender.py` (`UdpJointSender` -- one
+  `sendto` per tick, JSON `{timestamp, joint_names, positions}`, `joint_names`
+  = `mujoco_qpos_viz.JOINT_ORDER`, fire-and-forget, no ack/retry),
+  `policy_runner/act_model.py` (`ACTChunkPolicy` -- loads the
   checkpoint the same way `imitate_episodes.py`'s `eval_bc()` does: task
   config from `aloha_scripts/constants.py` via the checkpoint's own
   `config_hydra_resolved.yaml`, weights from the `.ckpt`, normalization from
@@ -221,7 +223,8 @@ the still-unbuilt UDP-to-real-robot stage.
   `control_hz`, `temporal_agg` (bool, default off), `temporal_agg_k` (decay
   rate, only used when `temporal_agg: true`), `ckpt_path`, `act_repo_root`,
   `mjcf_path` (all three as seen **inside the container** -- see "Mounts"
-  above).
+  above), `udp_output.host`/`.port` (LAN robot-control target; blank host
+  disables sending).
 - **Joint order / qpos mapping (unverified against the live rig):** the
   given MJCF's arm+hand actuator include order (6 UR joints + `WRZ`/`WRY` +
   4 fingers x 4 joints = 24) produces a plain `qpos[0..23]` layout with no
@@ -252,18 +255,25 @@ the still-unbuilt UDP-to-real-robot stage.
   `--config <path>` overrides `topics.yaml`; `--ckpt <path>` overrides
   `ckpt_path`; `--hz <n>` overrides `control_hz`; `--no-viewer` runs the
   inference loop without opening the MuJoCo window (e.g. for a headless
-  smoke test).
+  smoke test); `--udp-host`/`--udp-port` override `udp_output.host`/`.port`;
+  `--no-udp` disables UDP sending outright.
 
-## Next phase: UDP output to the real robot (not built yet)
+## UDP joint output
 
-Blocked on validating the MuJoCo visualization above against the live rig
-first. Design agreed in chat but not yet implemented:
+Each inference tick, the same action written to MuJoCo `qpos` is also sent
+over UDP as JSON: `{"timestamp": <unix seconds>, "joint_names": [...24
+names, see mujoco_qpos_viz.JOINT_ORDER...], "positions": [...24 floats...]}`.
+One packet per tick, fire-and-forget (no ack/retry) -- the receiver is
+expected to just consume the latest packet.
 
 - **Confirmed with user:** action space = standard joint target positions
   (matches training dataset). Control frequency = **30Hz** -- NOT the stale
-  `DT = 0.02` (50Hz) default in `act/constants.py`.
-- **Still needed:** UDP target IP/port + packet format expected by the
-  downstream machine.
+  `DT = 0.02` (50Hz) default in `act/constants.py`. Send content = action
+  only (not the observed/shadow qpos).
+- **Still needed:** target host/port -- `udp_output.host`/`.port` in
+  `config/topics.yaml` are left blank until the user configures them (or
+  pass `--udp-host`/`--udp-port` per run); until then the node logs a
+  warning and skips sending. Not yet run against a real receiver.
 - **ROS2 DDS/discovery config added** (`.bashrc` + `fastdds_profile.xml`,
   copied from `asu_state_reward_ws`'s pattern: `ROS_DOMAIN_ID=10`,
   `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`, `FASTRTPS_DEFAULT_PROFILES_FILE`

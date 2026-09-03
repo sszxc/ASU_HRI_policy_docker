@@ -16,14 +16,15 @@ machine on the LAN.
       (`camera100`=left, `camera102`=top, `camera101`=right/unused).
 - [x] `act_infer_mujoco` ROS2 node: runs ACT inference at a fixed 30Hz and
       writes the raw action straight into a MuJoCo model's qpos for
-      visualization -- no actuators/`mj_step`, no UDP output yet.
+      visualization -- no actuators/`mj_step`.
       Model-loading + inference verified end-to-end against the real
       checkpoint on GPU; the live-ROS + MuJoCo-viewer path itself has
       **not** been run against the live rig yet (needs a container restart
       to pick up the new `Honda_proto5_description` mount).
-- [ ] Send the resulting action over UDP to the real robot -- not built yet,
-      blocked on validating the MuJoCo visualization against the live rig
-      first.
+- [x] Send the resulting action over UDP to the real robot: implemented
+      (JSON per tick, see `config/topics.yaml`'s `act_inference.udp_output`),
+      but the target host/port are still unconfigured (blank) and it has
+      **not** been run against a real receiver yet.
 
 See [NOTES.md](NOTES.md) for build rationale, known gotchas, usage
 commands, and next-phase design details.
