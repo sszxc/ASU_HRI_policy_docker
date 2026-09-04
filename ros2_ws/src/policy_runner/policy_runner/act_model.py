@@ -89,6 +89,31 @@ class ACTChunkPolicy:
 
         self.did_infer = False  # set by next_action(): True if this call queried the model
 
+        # OOD indicator support: last_backbone_features is refreshed by a forward hook
+        # every time self.policy(...) actually runs (see _query_chunk) -- i.e. every
+        # next_action() call in temporal_agg mode, or only on did_infer==True ticks in
+        # chunked mode. {camera_name: (C,) np.ndarray}, global-average-pooled backbone
+        # output -- the same features the policy itself conditions on, so distance in
+        # this space reflects what the policy "sees", not generic image similarity.
+        self.last_backbone_features = {}
+        self._register_backbone_hooks()
+
+    def _register_backbone_hooks(self):
+        # Assumes the standard tonyzhaozh/act DETRVAE layout: policy.model.backbones is
+        # an nn.ModuleList (one per camera_names entry, in order), each a Joiner whose
+        # forward returns (features, pos) with features[0] the last conv layer's (B, C,
+        # H, W) map. Not verified against the actual act repo from this sandbox (no
+        # ~/act here) -- if the attribute path has changed, this raises AttributeError
+        # at load time rather than silently capturing nothing.
+        backbones = self.policy.model.backbones
+        for cam_idx, cam_name in enumerate(self.camera_names):
+            def _hook(_module, _inputs, output, cam_name=cam_name):
+                features, _pos = output
+                pooled = features[0].mean(dim=(-2, -1))  # (B, C, H, W) -> (B, C)
+                self.last_backbone_features[cam_name] = pooled.detach().float().cpu().numpy()[0]
+
+            backbones[cam_idx].register_forward_hook(_hook)
+
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
@@ -104,6 +129,15 @@ class ACTChunkPolicy:
         image_t = torch.from_numpy(image_np / 255.0).float().to(self.device).unsqueeze(0)
         all_actions = self.policy(qpos_t, image_t)
         return all_actions.squeeze(0).cpu().numpy()
+
+    @torch.inference_mode()
+    def query_backbone_features(self, qpos, images_by_camera):
+        """Runs one forward pass purely to refresh last_backbone_features, without
+        touching next_action()'s chunk-buffer state. Used offline by
+        ood_reference_builder.py to extract training-set features; not used in the
+        live control loop (next_action() already refreshes the same attribute)."""
+        self._query_chunk(qpos, images_by_camera)
+        return self.last_backbone_features
 
     @torch.inference_mode()
     def next_action(self, qpos, images_by_camera):

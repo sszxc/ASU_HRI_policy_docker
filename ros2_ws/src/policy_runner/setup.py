@@ -28,6 +28,7 @@ setup(
         "console_scripts": [
             "web_monitor = policy_runner.web_monitor:main",
             "act_infer_mujoco = policy_runner.act_infer_mujoco:main",
+            "ood_build_reference = policy_runner.ood_reference_builder:main",
         ],
     },
 )

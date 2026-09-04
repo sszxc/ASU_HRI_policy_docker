@@ -173,6 +173,26 @@ def main(args=None):
     )
     viz = MujocoQposViz(act_cfg["mjcf_path"], launch_viewer=not cli.no_viewer)
 
+    ood = None
+    ood_web = None
+    ood_cfg = config.get("ood_monitor") or {}
+    if ood_cfg.get("enabled", False):
+        reference_dir = Path(ood_cfg["reference_dir"]).expanduser()
+        if reference_dir.is_dir():
+            from policy_runner.ood_monitor import OODMonitor, OODWebServer  # sklearn -- optional dep
+
+            ood = OODMonitor(
+                reference_dir, knn_k=int(ood_cfg.get("knn_k", 5)), umap_hz=float(ood_cfg.get("umap_hz", 3.0))
+            )
+            web_cfg = ood_cfg.get("web", {}) or {}
+            ood_web = OODWebServer(
+                ood, share / "static", host=web_cfg.get("host", "0.0.0.0"), port=int(web_cfg.get("port", 8081))
+            )
+            ood_web.start()
+            print(f"[act_infer_mujoco] OOD monitor: http://{web_cfg.get('host', '0.0.0.0')}:{web_cfg.get('port', 8081)}/ood")
+        else:
+            print(f"[act_infer_mujoco] ood_monitor.enabled but reference_dir not found: {reference_dir} -- skipping")
+
     udp_sender = None
     if not cli.no_udp:
         udp_cfg = act_cfg.get("udp_output", {}) or {}
@@ -207,6 +227,10 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                if ood is not None:
+                    # backbone_features only refreshes on did_infer ticks (see act_model.py) --
+                    # ood.update() carries the image-side scores forward between them on its own.
+                    ood.update(qpos, policy.last_backbone_features if policy.did_infer else None)
                 action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 if udp_sender is not None:
                     # Clip to the MJCF joint limits before it leaves for the real robot -- viz above
@@ -228,6 +252,8 @@ def main(args=None):
         pass
     finally:
         viz.close()
+        if ood_web is not None:
+            ood_web.stop()
         if udp_sender is not None:
             udp_sender.close()
         executor.shutdown()

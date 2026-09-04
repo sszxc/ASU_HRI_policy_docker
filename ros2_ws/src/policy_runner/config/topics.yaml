@@ -83,3 +83,17 @@ act_inference:
   udp_output:
     host: "192.168.1.12"
     port: 6000
+
+# OOD indicator (logging/visualization only -- no gating or alerting). reference_dir
+# is built offline by `ood_reference_builder.py` (needs the training hdf5 episodes +
+# act repo, run inside the container) and must match the ckpt above. Serves a Plotly
+# page at http://<web.host>:<web.port>/ood showing each modality's training-set UMAP
+# cloud with the live point overlaid, plus each modality's live k-NN distance.
+ood_monitor:
+  enabled: false
+  reference_dir: ""
+  knn_k: 5
+  umap_hz: 3.0   # live-point UMAP re-projection rate; k-NN distance still updates every tick
+  web:
+    host: 0.0.0.0
+    port: 8081
