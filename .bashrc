@@ -22,6 +22,12 @@ if [ -f "$HOME/ros2_ws/install/setup.bash" ]; then
     source "$HOME/ros2_ws/install/setup.bash"
 fi
 
+# `pip3 install --user` (no --break-system-packages, PEP668 fallback) drops
+# console scripts here -- e.g. the `rerun` viewer binary rerun-sdk ships,
+# needed by act_infer_mujoco.py's `--rerun`. Above the guard so `docker exec`
+# shells get it too, same reasoning as the ROS vars above.
+export PATH="$HOME/.local/bin:$PATH"
+
 # If not running interactively, don't do anything else
 case $- in
     *i*) ;;
@@ -74,3 +80,5 @@ if ! shopt -oq posix; then
     . /etc/bash_completion
   fi
 fi
+
+alias colcon_build='colcon build --symlink-install --packages-select policy_runner  && source install/setup.bash'
