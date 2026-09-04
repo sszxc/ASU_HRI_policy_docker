@@ -184,7 +184,10 @@ def main(args=None):
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
                 action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 if udp_sender is not None:
-                    udp_sender.send(action, sequence=action_idx)
+                    # Clip to the MJCF joint limits before it leaves for the real robot -- viz above
+                    # still shows the policy's raw output so an out-of-range action is visible.
+                    clipped_action = np.clip(action, viz.joint_range[:, 0], viz.joint_range[:, 1])
+                    udp_sender.send(clipped_action, sequence=action_idx)
                 if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
                     infer_idx += 1
                     print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")

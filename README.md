@@ -26,5 +26,13 @@ machine on the LAN.
       but the target host/port are still unconfigured (blank) and it has
       **not** been run against a real receiver yet.
 
+**Gotcha:** `config/topics.yaml` paths (`mjcf_path`, `ckpt_path`,
+`act_repo_root`) are written as seen **inside the container** -- e.g.
+`mjcf_path: /home/asu/Honda_proto5_description/...` only resolves there
+because `docker/run/run_docker.sh` bind-mounts the host's
+`/home/asu/code/Honda_proto5_description` to that container path. Running
+tooling against these paths directly on the host will fail to find the file
+unless you adjust for the host-side mount source.
+
 See [NOTES.md](NOTES.md) for build rationale, known gotchas, usage
 commands, and next-phase design details.

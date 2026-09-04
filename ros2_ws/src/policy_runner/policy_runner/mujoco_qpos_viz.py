@@ -40,6 +40,13 @@ class MujocoQposViz:
             raise ValueError(f"expected nq={expected_nq} (main + shadow joints) but model nq={self.model.nq}")
         self.qpos_addr = np.array([self.model.joint(name).qposadr[0] for name in JOINT_ORDER])
         self.shadow_qpos_addr = np.array([self.model.joint(name).qposadr[0] for name in SHADOW_JOINT_ORDER])
+        # Per-joint (low, high) limits from the MJCF, in JOINT_ORDER -- unlimited joints get +-inf.
+        self.joint_range = np.array(
+            [
+                self.model.joint(name).range if self.model.joint(name).limited[0] else (-np.inf, np.inf)
+                for name in JOINT_ORDER
+            ]
+        )
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data) if launch_viewer else None
 
     def set_qpos(self, action, shadow_qpos=None):
