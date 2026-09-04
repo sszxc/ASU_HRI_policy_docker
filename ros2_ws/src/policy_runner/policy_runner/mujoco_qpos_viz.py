@@ -10,10 +10,13 @@ import numpy as np
 # Joint order = the arm+hand actuator include order in
 # hmf_hand_proto5_release_right_ur7e_{arm,hand}_actuator.xml. Verified against the
 # template scene: 24 hinge joints, qpos is a plain 0..23 layout in this order (no
-# other joints in the scene). This must match the order the real robot's
-# /joint_states (and thus the training qpos/action vectors) are in -- true by
-# construction here (it's this robot's own joint list) but not cross-checked against
-# a live /joint_states message; if the rendered pose looks wrong, check this first.
+# other joints in the scene). This is what the training qpos/action vectors are in
+# (confirmed 2026-09-03 via dataset_stats.pkl finger-joint correlations) -- but the
+# real robot's live /joint_states does NOT publish in this order (hand/wrist joints
+# come out differently, WRZ/WRY last instead of right after the arm). Callers must
+# reorder a live JointState by `name` into this order before using it here --
+# act_infer_mujoco.py's InferInputNode does this; don't feed raw positional
+# /joint_states arrays into set_qpos again.
 JOINT_ORDER = [
     "RArm_shoulder_pan_joint", "RArm_shoulder_lift_joint", "RArm_elbow_joint",
     "RArm_wrist_1_joint", "RArm_wrist_2_joint", "RArm_wrist_3_joint",
@@ -26,8 +29,7 @@ JOINT_ORDER = [
 
 # The scene template also carries a translucent, collision-free "Shadow_" duplicate
 # of the same 24 joints (see the MJCF's shadow-robot block) used to overlay the real
-# robot's observed qpos next to the policy's predicted action. Same order, same
-# caveat about not being cross-checked against a live /joint_states message.
+# robot's observed qpos next to the policy's predicted action. Same order/caveat.
 SHADOW_JOINT_ORDER = [f"Shadow_{name}" for name in JOINT_ORDER]
 
 

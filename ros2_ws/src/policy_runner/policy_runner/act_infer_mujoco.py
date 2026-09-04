@@ -51,6 +51,7 @@ class InferInputNode(Node):
         self.latest_image_ns = {}
         self.latest_qpos = None
         self.latest_qpos_ns = None
+        self._joint_idx = None  # lazy: /joint_states name-order -> JOINT_ORDER index map
         self._callback_groups = []  # keep references alive -- rclpy doesn't hold them
 
         for cam_name in self.camera_names:
@@ -92,9 +93,33 @@ class InferInputNode(Node):
             self.latest_image_ns[cam_name] = time.time_ns()
 
     def _on_joint_state(self, msg):
+        idx = self._joint_index_map(msg.name)
+        if idx is None:
+            return
+        positions = np.array(msg.position, dtype=np.float32)[idx]
         with self.lock:
-            self.latest_qpos = np.array(msg.position, dtype=np.float32)
+            self.latest_qpos = positions
             self.latest_qpos_ns = time.time_ns()
+
+    def _joint_index_map(self, names):
+        """Lazily built once: reorders a JointState's `position` array from its own
+        `name` order into JOINT_ORDER. Confirmed live (2026-09-03) that the real
+        robot's /joint_states does NOT publish in JOINT_ORDER -- hand/wrist joints
+        come in a different order (WRZ/WRY last, not right after the arm) -- and the
+        training checkpoint's dataset_stats.pkl confirms JOINT_ORDER is what qpos/
+        action were actually trained on. Positional (unreordered) reads were silently
+        feeding the policy a scrambled hand/wrist state."""
+        if self._joint_idx is not None:
+            return self._joint_idx
+        name_to_i = {n: i for i, n in enumerate(names)}
+        missing = [n for n in JOINT_ORDER if n not in name_to_i]
+        if missing:
+            self.get_logger().error(
+                f"/joint_states is missing joints needed for JOINT_ORDER: {missing}", throttle_duration_sec=2.0
+            )
+            return None
+        self._joint_idx = np.array([name_to_i[n] for n in JOINT_ORDER])
+        return self._joint_idx
 
     def latest_observation(self):
         """Returns (qpos, images_by_camera) if qpos + every camera is fresh, else None."""
