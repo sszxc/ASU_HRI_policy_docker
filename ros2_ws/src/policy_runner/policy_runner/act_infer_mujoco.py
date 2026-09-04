@@ -13,6 +13,11 @@ MutuallyExclusiveCallbackGroup on a MultiThreadedExecutor, so one topic decoding
 never blocks another). The ROS executor spins in a background thread; the main
 thread owns the fixed-rate inference/viewer loop, since MuJoCo's passive viewer
 wants one consistent thread calling `sync()`.
+
+`--rerun` additionally opens a rerun.io viewer with one timeseries plot per
+joint, overlaying real qpos (logged in `_on_joint_state`, at whatever rate
+/joint_states publishes) against the target sent over UDP (logged at the
+control-loop's UDP-send point) as two scatter series.
 """
 
 import argparse
@@ -22,6 +27,8 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+import rerun as rr
+import rerun.blueprint as rrb
 from ament_index_python.packages import get_package_share_directory
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
@@ -35,16 +42,49 @@ from policy_runner.mujoco_qpos_viz import JOINT_ORDER, MujocoQposViz
 from policy_runner.udp_joint_sender import UdpJointSender
 from policy_runner.web_monitor import load_config
 
+# rerun per-joint plots (--rerun): real observed qpos vs. policy's UDP-sent target,
+# as two scatter series overlaid on one timeseries chart per joint. Without an
+# explicit blueprint, rerun's auto-layout dumps every `joints/**` scalar into one
+# combined view instead of one-plot-per-joint -- the Grid of per-joint
+# TimeSeriesViews below is what actually splits them out.
+_RERUN_SERIES_STYLE = {
+    "real": {"color": [66, 133, 244], "marker": "Circle"},
+    "target": {"color": [251, 140, 0], "marker": "Cross"},
+}
+_RERUN_GRID_COLUMNS = 6
+
+
+def init_rerun_joint_plots():
+    """Spawn the rerun viewer with a Grid blueprint (one TimeSeriesView per
+    joint), then log per-joint scatter styling once (static) so the real/target
+    legend and colors are set before any scalar data arrives."""
+    views = [rrb.TimeSeriesView(origin=f"joints/{name}", name=name) for name in JOINT_ORDER]
+    blueprint = rrb.Blueprint(rrb.Grid(*views, grid_columns=_RERUN_GRID_COLUMNS))
+    rr.init("act_infer_mujoco", spawn=True)
+    # rr.init(default_blueprint=...) only applies if this app_id has no active
+    # blueprint yet -- a prior run without one leaves the viewer's auto-generated
+    # layout "active" forever after, silently ignoring the new default. send_blueprint
+    # with make_active=True forces this Grid layout on regardless of that history.
+    rr.send_blueprint(blueprint, make_active=True, make_default=True)
+    for name in JOINT_ORDER:
+        for series, style in _RERUN_SERIES_STYLE.items():
+            rr.log(
+                f"joints/{name}/{series}",
+                rr.SeriesPoints(colors=[style["color"]], markers=[style["marker"]], names=[series]),
+                static=True,
+            )
+
 
 class InferInputNode(Node):
     """Subscribes just the two training cameras + joint_states and caches the latest
     of each; the timed loop in main() reads it via latest_observation()."""
 
-    def __init__(self, config):
+    def __init__(self, config, rerun_enabled=False):
         super().__init__("act_infer_mujoco")
         act_cfg = config["act_inference"]
         self.camera_names = act_cfg["camera_names"]
         self.online_timeout_ns = int(float(config["online_timeout_seconds"]) * 1e9)
+        self.rerun_enabled = rerun_enabled
 
         self.lock = threading.Lock()
         self.latest_image = {}
@@ -97,9 +137,14 @@ class InferInputNode(Node):
         if idx is None:
             return
         positions = np.array(msg.position, dtype=np.float32)[idx]
+        now_ns = time.time_ns()
         with self.lock:
             self.latest_qpos = positions
-            self.latest_qpos_ns = time.time_ns()
+            self.latest_qpos_ns = now_ns
+        if self.rerun_enabled:
+            rr.set_time("wall_time", timestamp=now_ns / 1e9)
+            for name, position in zip(JOINT_ORDER, positions):
+                rr.log(f"joints/{name}/real", rr.Scalars([float(position)]))
 
     def _joint_index_map(self, names):
         """Lazily built once: reorders a JointState's `position` array from its own
@@ -147,6 +192,11 @@ def parse_args(args=None):
     parser.add_argument("--udp-host", default="", help="override act_inference.udp_output.host")
     parser.add_argument("--udp-port", type=int, default=0, help="override act_inference.udp_output.port")
     parser.add_argument("--no-udp", action="store_true", help="disable UDP joint output entirely")
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help="log real (per joint_states) vs. target (per UDP send) qpos to a rerun.io viewer, one plot per joint",
+    )
     return parser.parse_known_args(args)[0]
 
 
@@ -173,6 +223,9 @@ def main(args=None):
     )
     viz = MujocoQposViz(act_cfg["mjcf_path"], launch_viewer=not cli.no_viewer)
 
+    if cli.rerun:
+        init_rerun_joint_plots()
+
     udp_sender = None
     if not cli.no_udp:
         udp_cfg = act_cfg.get("udp_output", {}) or {}
@@ -188,7 +241,7 @@ def main(args=None):
             )
 
     rclpy.init(args=args)
-    node = InferInputNode(config)
+    node = InferInputNode(config, rerun_enabled=cli.rerun)
     executor = MultiThreadedExecutor(num_threads=max(4, len(node.camera_names) + 2))
     executor.add_node(node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
@@ -213,6 +266,10 @@ def main(args=None):
                     # still shows the policy's raw output so an out-of-range action is visible.
                     clipped_action = np.clip(action, viz.joint_range[:, 0], viz.joint_range[:, 1])
                     udp_sender.send(clipped_action, sequence=action_idx)
+                    if cli.rerun:
+                        rr.set_time("wall_time", timestamp=time.time())
+                        for name, position in zip(JOINT_ORDER, clipped_action):
+                            rr.log(f"joints/{name}/target", rr.Scalars([float(position)]))
                 if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
                     infer_idx += 1
                     print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")
