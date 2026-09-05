@@ -200,6 +200,33 @@ def parse_args(args=None):
     return parser.parse_known_args(args)[0]
 
 
+def start_ood_monitor(ood_cfg, static_dir):
+    """Returns (OODMonitor, OODWebServer) or (None, None) when disabled/unbuilt.
+    Imported lazily -- ood_monitor pulls in sklearn + umap, which the rest of this
+    node doesn't need."""
+    ood_cfg = ood_cfg or {}
+    if not ood_cfg.get("enabled", False):
+        return None, None
+    reference_dir = Path(ood_cfg.get("reference_dir", "")).expanduser()
+    if not reference_dir.is_dir():
+        print(f"[act_infer_mujoco] ood_monitor enabled but reference_dir not found: {reference_dir} -- skipping "
+              f"(build it with `ros2 run policy_runner ood_build_reference`)")
+        return None, None
+
+    from policy_runner.ood_monitor import OODMonitor, OODWebServer
+
+    monitor = OODMonitor(
+        reference_dir, knn_k=int(ood_cfg.get("knn_k", 5)), umap_hz=float(ood_cfg.get("umap_hz", 10.0))
+    )
+    web_cfg = ood_cfg.get("web") or {}
+    host = web_cfg.get("host", "0.0.0.0")
+    port = int(web_cfg.get("port", 8081))
+    web = OODWebServer(monitor, static_dir, host=host, port=port)
+    web.start()
+    print(f"[act_infer_mujoco] OOD monitor -> http://{host}:{port}/  (modalities: {', '.join(monitor.modalities)})")
+    return monitor, web
+
+
 def main(args=None):
     cli = parse_args(args)
     share = Path(get_package_share_directory("policy_runner"))
@@ -225,6 +252,8 @@ def main(args=None):
 
     if cli.rerun:
         init_rerun_joint_plots()
+
+    ood, ood_web = start_ood_monitor(config.get("ood_monitor"), share / "static")
 
     udp_sender = None
     if not cli.no_udp:
@@ -260,6 +289,11 @@ def main(args=None):
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
                 viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                if ood is not None:
+                    # Cheap: just hands the sample to the monitor's worker thread. Image
+                    # features only refresh on did_infer ticks; in between the monitor
+                    # holds the last image-side score.
+                    ood.update(qpos, policy.last_backbone_features if policy.did_infer else None)
                 action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 if udp_sender is not None:
                     # Clip to the MJCF joint limits before it leaves for the real robot -- viz above
@@ -285,6 +319,8 @@ def main(args=None):
         pass
     finally:
         viz.close()
+        if ood_web is not None:
+            ood_web.stop()
         if udp_sender is not None:
             udp_sender.close()
         executor.shutdown()

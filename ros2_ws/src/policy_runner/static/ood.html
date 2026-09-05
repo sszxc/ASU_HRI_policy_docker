@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OOD Monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    /* OOD-specific bits; palette/base come from styles.css (shared with web_monitor). */
+    .scores { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .score { flex: 1 1 200px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+    .score .name { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .score .dist { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .score .ratio { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+    .panel { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 8px 10px 10px; }
+    .panel h2 { margin-bottom: 6px; color: var(--muted); }
+    .panel canvas { width: 100%; height: 300px; display: block; }
+    .legend { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .note { color: var(--muted); font-size: 12px; margin-top: 16px; max-width: 70ch; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>OOD Monitor</h1>
+    <div class="system-state"><span id="conn">connecting...</span></div>
+  </div>
+  <main>
+    <div class="scores" id="scores"></div>
+    <div class="panels" id="panels"></div>
+    <p class="note">
+      Each panel is a UMAP projection of the training set (grey) for one modality, with the
+      live observation and its recent trail on top. The number above is the mean distance to
+      its k nearest training neighbours in the original (un-projected) space; the ratio
+      compares it to the training set's own 95th-percentile neighbour distance, so ~1x is
+      typical in-distribution. Indicator only -- nothing here gates the policy.
+    </p>
+  </main>
+  <script src="/ood.js"></script>
+</body>
+</html>

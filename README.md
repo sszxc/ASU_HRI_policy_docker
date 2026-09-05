@@ -26,6 +26,15 @@ machine on the LAN.
       but the target host/port are still unconfigured (blank) and it has
       **not** been run against a real receiver yet.
 
+- [x] OOD indicator (`ood_monitor`, optional, off by default): per-tick k-NN
+      distance for qpos + each camera's ACT backbone feature against the
+      training set, plus a UMAP scatter of the live point, served at
+      `:8081`. Recording/visualization only -- it never gates the policy.
+      Reference set is built per checkpoint with
+      `ros2 run policy_runner ood_build_reference` (see USAGE.md). The
+      offline builder and the monitor/web endpoints are verified against the
+      real checkpoint + training data; the live-rig path has not been run yet.
+
 **Gotcha:** `config/topics.yaml` paths (`mjcf_path`, `ckpt_path`,
 `act_repo_root`) are written as seen **inside the container** -- e.g.
 `mjcf_path: /home/asu/Honda_proto5_description/...` only resolves there

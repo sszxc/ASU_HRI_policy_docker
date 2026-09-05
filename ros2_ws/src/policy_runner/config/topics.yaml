@@ -83,3 +83,19 @@ act_inference:
   udp_output:
     host: "192.168.1.12"
     port: 6000
+
+# OOD indicator -- logging/visualization only, never gates or alerts. Serves a page at
+# http://<web.host>:<web.port>/ with, per modality (qpos + one per camera), the training
+# set's UMAP cloud, the live point on top, and its k-NN distance to the training set.
+# reference_dir is built offline, per checkpoint, by:
+#   ros2 run policy_runner ood_build_reference --ckpt <act_inference.ckpt_path>
+# which writes <ckpt_dir>/ood_reference/. It MUST match ckpt_path above.
+ood_monitor:
+  enabled: false
+  reference_dir: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_hedge/ood_reference
+  knn_k: 5              # match ood_build_reference --knn-k, or the ratio-vs-train baseline is off
+  umap_hz: 10.0         # live-point re-projection rate (UMAP.transform is the expensive part);
+                        # k-NN distance updates every control tick regardless
+  web:
+    host: 0.0.0.0
+    port: 8081          # web_monitor already uses 8080

@@ -43,6 +43,9 @@ class ACTChunkPolicy:
 
         task_config = TASK_CONFIGS[hydra_cfg["task_name"]]
         self.camera_names = task_config["camera_names"]
+        # constants.py's DATA_DIR is relative to the act repo root; make it absolute
+        # so ood_reference_builder.py can default --data-dir to it from anywhere.
+        self.dataset_dir = os.path.join(os.path.expanduser(act_repo_root), task_config["dataset_dir"])
         self.state_dim = task_config["state_dim"]
         self.action_dim = task_config.get("action_dim", self.state_dim)
         self.chunk_size = hydra_cfg["chunk_size"]
@@ -89,6 +92,21 @@ class ACTChunkPolicy:
 
         self.did_infer = False  # set by next_action(): True if this call queried the model
 
+        # OOD indicator: one forward hook on the image backbone appends each camera's
+        # globally-pooled feature during every self.policy(...) forward; _query_chunk
+        # zips them back onto camera_names. This ACT fork shares a SINGLE backbone
+        # (detr_vae.py: `self.backbones[0](image[:, cam_id])  # HARDCODED`) called once
+        # per camera in camera_names order, so call order -- not module index -- is what
+        # identifies the camera.
+        self.last_backbone_features = {}  # {camera_name: (C,) np.ndarray}, refreshed per forward
+        self._feature_buffer = []
+        self.policy.model.backbones[0].register_forward_hook(self._backbone_hook)
+
+    def _backbone_hook(self, _module, _inputs, output):
+        features, _pos = output  # Joiner.forward -> ([last-layer (B,C,H,W)], [pos])
+        pooled = features[0].mean(dim=(-2, -1))  # (B, C, H, W) -> (B, C)
+        self._feature_buffer.append(pooled[0].detach().float().cpu().numpy())
+
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
@@ -102,8 +120,18 @@ class ACTChunkPolicy:
         images = [images_by_camera[cam] for cam in self.camera_names]
         image_np = np.stack([np.transpose(im, (2, 0, 1)) for im in images], axis=0)
         image_t = torch.from_numpy(image_np / 255.0).float().to(self.device).unsqueeze(0)
+        self._feature_buffer.clear()
         all_actions = self.policy(qpos_t, image_t)
+        self.last_backbone_features = dict(zip(self.camera_names, self._feature_buffer))
         return all_actions.squeeze(0).cpu().numpy()
+
+    @torch.inference_mode()
+    def query_backbone_features(self, qpos, images_by_camera):
+        """Runs one forward pass purely for last_backbone_features, without touching
+        next_action()'s chunk-buffer state. Used by ood_reference_builder.py; the live
+        loop reads policy.last_backbone_features, which next_action() already refreshes."""
+        self._query_chunk(qpos, images_by_camera)
+        return self.last_backbone_features
 
     @torch.inference_mode()
     def next_action(self, qpos, images_by_camera):
