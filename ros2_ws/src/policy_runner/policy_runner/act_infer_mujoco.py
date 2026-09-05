@@ -206,6 +206,10 @@ def start_ood_monitor(ood_cfg, static_dir):
     node doesn't need."""
     ood_cfg = ood_cfg or {}
     if not ood_cfg.get("enabled", False):
+        # Say so explicitly: the config read here is the INSTALLED copy, so editing
+        # src/.../topics.yaml without re-running colcon build looks like a dead page.
+        print("[act_infer_mujoco] OOD monitor disabled (ood_monitor.enabled is false in the "
+              "installed config -- edit config/topics.yaml, then re-run colcon build)")
         return None, None
     reference_dir = Path(ood_cfg.get("reference_dir", "")).expanduser()
     if not reference_dir.is_dir():
