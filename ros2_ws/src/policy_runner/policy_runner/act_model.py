@@ -31,7 +31,8 @@ def _add_act_repo_to_syspath(act_repo_root):
 
 
 class ACTChunkPolicy:
-    def __init__(self, ckpt_path, act_repo_root="~/act", device=None, temporal_agg=False, temporal_agg_k=0.01):
+    def __init__(self, ckpt_path, act_repo_root="~/act", device=None, temporal_agg=False,
+                 temporal_agg_k=0.01, temporal_agg_newest=False):
         _add_act_repo_to_syspath(act_repo_root)
         import yaml
         from aloha_scripts.constants import TASK_CONFIGS
@@ -81,9 +82,17 @@ class ACTChunkPolicy:
 
         with open(os.path.join(ckpt_dir, "dataset_stats.pkl"), "rb") as f:
             self.stats = pickle.load(f)
+        # act/imitate_episodes.py trains some runs to predict action - qpos ("delta") instead
+        # of the raw action ("absolute"); dataset_stats.pkl records which. Denormalizing a
+        # delta checkpoint's output with action_mean/action_std (as if it were absolute)
+        # silently produces a target near the training set's mean qpos, unrelated to the
+        # robot's actual current position or the scene -- see act/eval_deploy_metrics.py's
+        # denorm() / imitate_episodes.py's post_process for the reference implementation.
+        self.action_repr = self.stats.get("action_repr", "absolute")
 
         self.temporal_agg = temporal_agg
         self.temporal_agg_k = temporal_agg_k
+        self.temporal_agg_newest = temporal_agg_newest
 
         self._chunk = None  # (chunk_size, action_dim) raw actions, buffered from the last query
         self._chunk_step = 0
@@ -110,7 +119,9 @@ class ACTChunkPolicy:
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
-    def _post_action(self, action):
+    def _post_action(self, action, qpos_raw):
+        if self.action_repr == "delta":
+            return action * self.stats["delta_std"] + self.stats["delta_mean"] + qpos_raw
         return action * self.stats["action_std"] + self.stats["action_mean"]
 
     def _query_chunk(self, qpos, images_by_camera):
@@ -149,13 +160,18 @@ class ACTChunkPolicy:
             self._chunk_step = 0
         raw_action = self._chunk[self._chunk_step]
         self._chunk_step += 1
-        return self._post_action(raw_action)
+        return self._post_action(raw_action, np.asarray(qpos, dtype=np.float32)[: self.action_dim])
 
     def _next_action_temporal_agg(self, qpos, images_by_camera):
         """Query every step; average this step's predictions from every still-relevant
-        buffered chunk, weighted by exp(-k * age) with age counted oldest-chunk-first
-        (older chunks get the larger weight) -- same scheme as `act/imitate_episodes.py`
-        eval_bc()'s `--temporal_agg` path."""
+        buffered chunk, weighted by exp(-k * age). Upstream (`temporal_agg_newest=False`)
+        counts age oldest-chunk-first, so the OLDEST chunk still covering this step gets the
+        largest weight -- at 30Hz/chunk_size=50 that's a near-uniform average over ~1.7s of
+        stale predictions, ~0.8s of lag. `temporal_agg_newest=True` reverses it (same fix as
+        `act/imitate_episodes.py`'s `--temporal_agg_newest`): measured there at -47.5% mean
+        command error with k=0.5, no retraining needed.
+        Delta reconstruction (`_post_action`) happens once, after averaging, using qpos at
+        the CURRENT step -- matches imitate_episodes.py's post_process(raw_action, qpos_numpy)."""
         self.did_infer = True  # always queries -- kept for a uniform did_infer check regardless of mode
         chunk = self._query_chunk(qpos, images_by_camera)
         step = self._step
@@ -163,7 +179,8 @@ class ACTChunkPolicy:
         self._step += 1
 
         preds = [c[step - start] for start, c in self._chunk_buffer if start <= step < start + self.chunk_size]
-        weights = np.exp(-self.temporal_agg_k * np.arange(len(preds)))
+        order = np.arange(len(preds))[::-1] if self.temporal_agg_newest else np.arange(len(preds))
+        weights = np.exp(-self.temporal_agg_k * order)
         weights /= weights.sum()
         raw_action = np.sum(np.stack(preds) * weights[:, None], axis=0)
-        return self._post_action(raw_action)
+        return self._post_action(raw_action, np.asarray(qpos, dtype=np.float32)[: self.action_dim])

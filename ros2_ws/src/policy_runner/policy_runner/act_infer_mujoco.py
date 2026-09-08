@@ -247,10 +247,12 @@ def main(args=None):
         act_repo_root=act_cfg.get("act_repo_root", "~/act"),
         temporal_agg=bool(act_cfg.get("temporal_agg", False)),
         temporal_agg_k=float(act_cfg.get("temporal_agg_k", 0.01)),
+        temporal_agg_newest=bool(act_cfg.get("temporal_agg_newest", False)),
     )
     print(
         f"[act_infer_mujoco] chunk_size={policy.chunk_size} camera_names={policy.camera_names} "
-        f"device={policy.device} temporal_agg={policy.temporal_agg}"
+        f"device={policy.device} temporal_agg={policy.temporal_agg} "
+        f"temporal_agg_newest={policy.temporal_agg_newest} action_repr={policy.action_repr}"
     )
     viz = MujocoQposViz(act_cfg["mjcf_path"], launch_viewer=not cli.no_viewer)
 
