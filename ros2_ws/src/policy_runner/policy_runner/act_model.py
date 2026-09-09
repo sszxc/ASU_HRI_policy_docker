@@ -17,6 +17,7 @@ import pickle
 import sys
 from collections import deque
 
+import cv2
 import numpy as np
 import torch
 
@@ -37,18 +38,31 @@ class ACTChunkPolicy:
         import yaml
         from aloha_scripts.constants import TASK_CONFIGS
         from policy import ACTPolicy
+        import forward_kinematics
+        self._fk = forward_kinematics
 
         ckpt_dir = os.path.dirname(ckpt_path)
         with open(os.path.join(ckpt_dir, "config_hydra_resolved.yaml")) as f:
             hydra_cfg = yaml.safe_load(f)
 
         task_config = TASK_CONFIGS[hydra_cfg["task_name"]]
-        self.camera_names = task_config["camera_names"]
+        # camera_names is a per-run Hydra CLI override (config_hydra_resolved.yaml carries
+        # the actual training cameras); TASK_CONFIGS only has the task's default, which
+        # drifts across sweeps that override cameras under the same task_name.
+        self.camera_names = hydra_cfg.get("camera_names") or task_config["camera_names"]
         # constants.py's DATA_DIR is relative to the act repo root; make it absolute
         # so ood_reference_builder.py can default --data-dir to it from anywhere.
         self.dataset_dir = os.path.join(os.path.expanduser(act_repo_root), task_config["dataset_dir"])
-        self.state_dim = task_config["state_dim"]
-        self.action_dim = task_config.get("action_dim", self.state_dim)
+        # (H, W) training resized every camera to before stacking (act/utils.py
+        # load_cam_images) -- cameras differ in native resolution, so live inference
+        # must match or np.stack fails. None means training didn't resize (cameras
+        # already matched).
+        self.image_size = hydra_cfg.get("image_size")
+        # state_dim/action_dim: prefer the run's own resolved config over TASK_CONFIGS -- a
+        # task_space run overrides these via CLI (state_dim=27 action_dim=27, see act/README),
+        # which TASK_CONFIGS (fixed per task_name) has no way to reflect.
+        self.state_dim = hydra_cfg.get("state_dim") or task_config["state_dim"]
+        self.action_dim = hydra_cfg.get("action_dim") or task_config.get("action_dim", self.state_dim)
         self.chunk_size = hydra_cfg["chunk_size"]
 
         policy_config = {
@@ -89,6 +103,10 @@ class ACTChunkPolicy:
         # robot's actual current position or the scene -- see act/eval_deploy_metrics.py's
         # denorm() / imitate_episodes.py's post_process for the reference implementation.
         self.action_repr = self.stats.get("action_repr", "absolute")
+        # task_space: next_action() returns pos(3)+quat_wxyz(4)+hand(18) instead of joint
+        # targets (see _post_action) -- these are the hand's 18 joint names, in the order
+        # that trailing block comes out in.
+        self.hand_joint_names = list(forward_kinematics.JOINT_NAMES[forward_kinematics.N_ARM:])
 
         self.temporal_agg = temporal_agg
         self.temporal_agg_k = temporal_agg_k
@@ -119,16 +137,42 @@ class ACTChunkPolicy:
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
+    def _reference_state(self, qpos):
+        """The value action/delta targets are expressed relative to: the FK'd task-space
+        state (pos+rot6d+hand, 27-dim) for task_space, else the plain robot-qpos slice."""
+        qpos = np.asarray(qpos, dtype=np.float32)
+        if self.action_repr == "task_space":
+            return self._fk.task_state(qpos)
+        return qpos[: self.action_dim]
+
     def _post_action(self, action, qpos_raw):
+        if self.action_repr == "task_space":
+            # qpos_raw is _reference_state's FK'd state, not raw robot qpos. pos/hand deltas
+            # add directly; the rotation delta is a 6D encoding of a *relative* rotation, so
+            # it composes onto the reference by matrix multiply, not addition.
+            delta = action * self.stats["task_space_std"] + self.stats["task_space_mean"]
+            R0 = self._fk.sixd_to_rotmat(qpos_raw[3:9])
+            R1 = R0 @ self._fk.sixd_to_rotmat(delta[3:9])
+            pos = qpos_raw[:3] + delta[:3]
+            hand = qpos_raw[9:] + delta[9:]
+            return np.concatenate([pos, self._fk.rotmat_to_quat_wxyz(R1), hand])
         if self.action_repr == "delta":
             return action * self.stats["delta_std"] + self.stats["delta_mean"] + qpos_raw
         return action * self.stats["action_std"] + self.stats["action_mean"]
 
     def _query_chunk(self, qpos, images_by_camera):
         """Runs the model once, returns the raw (chunk_size, action_dim) predicted chunk."""
-        qpos_n = self._pre_qpos(np.asarray(qpos, dtype=np.float32)[: self.state_dim])
-        qpos_t = torch.from_numpy(qpos_n).float().to(self.device).unsqueeze(0)
+        qpos_raw = np.asarray(qpos, dtype=np.float32)
+        if self.action_repr == "task_space":
+            qpos_raw = self._fk.task_state(qpos_raw)  # 24-dim robot qpos -> 27-dim state
+        else:
+            qpos_raw = qpos_raw[: self.state_dim]
+        qpos_n = self._pre_qpos(qpos_raw)
+        qpos_t = torch.from_numpy(qpos_n.astype(np.float32)).float().to(self.device).unsqueeze(0)
         images = [images_by_camera[cam] for cam in self.camera_names]
+        if self.image_size is not None:
+            h, w = int(self.image_size[0]), int(self.image_size[1])
+            images = [cv2.resize(im, (w, h), interpolation=cv2.INTER_AREA) for im in images]
         image_np = np.stack([np.transpose(im, (2, 0, 1)) for im in images], axis=0)
         image_t = torch.from_numpy(image_np / 255.0).float().to(self.device).unsqueeze(0)
         self._feature_buffer.clear()
@@ -146,9 +190,12 @@ class ACTChunkPolicy:
 
     @torch.inference_mode()
     def next_action(self, qpos, images_by_camera):
-        """qpos: (state_dim,) array, robot joint order. images_by_camera: {camera_name:
-        HxWx3 uint8 RGB ndarray}, one entry per self.camera_names. Returns (action_dim,)
-        raw (unnormalized) joint targets."""
+        """qpos: (state_dim,) array, robot joint order (JOINT_NAMES/JOINT_ORDER for
+        task_space -- FK needs the actual joint layout, not just state_dim of it).
+        images_by_camera: {camera_name: HxWx3 uint8 RGB ndarray}, one entry per
+        self.camera_names. Returns raw (unnormalized) joint targets, (action_dim,) --
+        except for task_space, which returns pos(3)+quat_wxyz(4)+hand(18) (see
+        hand_joint_names for the trailing block's joint order), no IK applied."""
         if self.temporal_agg:
             return self._next_action_temporal_agg(qpos, images_by_camera)
         return self._next_action_chunked(qpos, images_by_camera)
@@ -160,7 +207,7 @@ class ACTChunkPolicy:
             self._chunk_step = 0
         raw_action = self._chunk[self._chunk_step]
         self._chunk_step += 1
-        return self._post_action(raw_action, np.asarray(qpos, dtype=np.float32)[: self.action_dim])
+        return self._post_action(raw_action, self._reference_state(qpos))
 
     def _next_action_temporal_agg(self, qpos, images_by_camera):
         """Query every step; average this step's predictions from every still-relevant
@@ -183,4 +230,4 @@ class ACTChunkPolicy:
         weights = np.exp(-self.temporal_agg_k * order)
         weights /= weights.sum()
         raw_action = np.sum(np.stack(preds) * weights[:, None], axis=0)
-        return self._post_action(raw_action, np.asarray(qpos, dtype=np.float32)[: self.action_dim])
+        return self._post_action(raw_action, self._reference_state(qpos))

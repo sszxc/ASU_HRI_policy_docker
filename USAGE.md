@@ -42,9 +42,7 @@ docker stop asu_il_policy && docker rm asu_il_policy
 ls ~/Honda_proto5_description/mjcf/   # 应该能看到 xml 文件
 
 然后重新跑：
-cd ~/ros2_ws
-colcon build --symlink-install --packages-select policy_runner
-source install/setup.bash
+cd ~/ros2_ws && colcon build --symlink-install --packages-select policy_runner && source install/setup.bash
 ros2 run policy_runner act_infer_mujoco
 ```
 

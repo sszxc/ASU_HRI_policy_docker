@@ -27,19 +27,19 @@ online_timeout_seconds: 3.0
 # static/index.html the camera's tile renders in. A panel with no cameras
 # assigned just renders empty.
 cameras:
-  camera100:
+  camera100:  # left
     group: external
     topic: /avatar/camera100/camera100/color/image_raw
-  camera101:
+  camera101:  # right
     group: external
     topic: /avatar/camera101/camera101/color/image_raw
-  camera102:
+  camera102:  # top
     group: external
     topic: /avatar/camera102/camera102/color/image_raw
-  wrist_cam:
+  wrist_cam:  # wrist
     group: wrist
     topic: /avatar/right_arm/wrist_cam/wrist_cam/color/image_raw
-  side_cam:
+  side_cam:  # side
     group: wrist
     topic: /avatar/right_arm/wrist_cam/side_cam/color/image_raw
 
@@ -53,36 +53,53 @@ joint_states:
 # act_infer_mujoco node: ACT inference driving a MuJoCo model's qpos directly
 # (visualization only -- no actuators/mj_step, no UDP command to the real robot).
 act_inference:
-  # Order matters -- must match the trained task's camera_names
-  # (aloha_scripts/constants.py TASK_CONFIGS["real_pick_yellow_bottle"]).
-  camera_names: [left, top]
-  # logical camera_names entry -> key under `cameras:` above
+  # camera_names is NOT set here -- act_model.py reads it straight off the loaded
+  # ckpt_path's config_hydra_resolved.yaml (the actual per-run Hydra camera override),
+  # so it always matches whichever checkpoint is selected below.
+  # logical camera name -> key under `cameras:` above. Fixed rig fact, independent of
+  # ckpt_path; must cover every camera any checkpoint you point ckpt_path at might need.
   camera_topic_map:
     left: camera100
+    right: camera101
     top: camera102
+    wrist: wrist_cam
+    side: side_cam
   control_hz: 30.0
   # false (default): query the model once every chunk_size steps, serve the buffered
   # chunk open-loop -- cheap, but action can visibly "step" at each requery.
   # true: query every step and blend overlapping chunk predictions (exponential decay,
   # see act_model.py) for smoother output, at chunk_size-x inference cost.
-  temporal_agg: true
-  temporal_agg_k: 0.01   # only used when temporal_agg: true -- larger = weights older buffered
-                          # chunks more heavily; 0 = uniform average across buffered chunks
+  temporal_agg: false
+  temporal_agg_k: 0.5     # only used when temporal_agg: true -- larger = weights the end favored
+                          # by temporal_agg_newest more heavily; 0 = uniform average across chunks
+  # false (default, matches upstream ACT): the OLDEST buffered chunk covering this step is
+  # weighted most -- ~0.8s of lag at 30Hz/chunk_size=50. true reverses it, weighting the
+  # NEWEST chunk most; act's 20260904 sweep measured -47.5% mean command error at k=0.5,
+  # no retraining needed (see act/results/sweep_20260904/REPORT.md §5).
+  temporal_agg_newest: true
   # Paths as seen INSIDE the container (docker/run/run_docker.sh mounts host
   # ~/code/act -> ~/act and host ~/code/Honda_proto5_description ->
   # ~/Honda_proto5_description; this node only ever runs in-container).
-  
-  # ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_aggressive/policy_best.ckpt
-  ckpt_path: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_hedge/policy_best.ckpt
+
+  # shows motion_ratio=1.03 (best amplitude match) and track_corr=0.169 (near the sweep's peak).
+  # ckpt_path: /home/asu/act/results/scripted_only_20260908/raw/policy_best_deploy.ckpt
+  ckpt_path: /home/asu/act/results/sweep_20260904/s5_kl0.01/policy_best_deploy.ckpt
+
   act_repo_root: /home/asu/act
-  mjcf_path: /home/asu/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_template_joint_ctrl.xml
+  # act_infer_mujoco.py picks one of these based on the loaded checkpoint's action_repr
+  # (see act_model.py) -- joint-space pushes qpos directly (FK only, no actuators/mj_step);
+  # task_space has no arm actuators of its own, only a mocap body weld-constrained to
+  # RHand_PALM_LINK, so mujoco_qpos_viz.py steps physics (mj_step) to let the weld pull the
+  # arm to the policy's predicted pose (no analytic IK).
+  mjcf_path_joint_space: /home/asu/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_template_joint_ctrl_with_shadow.xml
+  mjcf_path_task_space: /home/asu/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_template_with_shadow.xml
   # UDP output of the predicted action (JOINT_ORDER from mujoco_qpos_viz.py) as
   # JSON {timestamp, joint_names, positions}, sent once per inference tick to a
   # LAN robot-control host. Leave host blank to disable until configured (or
   # override both with --udp-host/--udp-port; --no-udp disables outright).
   udp_output:
     host: "192.168.1.12"
-    port: 6000
+    port: 6001
 
 # OOD indicator -- logging/visualization only, never gates or alerts. Serves a page at
 # http://<web.host>:<web.port>/ with, per modality (qpos + one per camera), the training
@@ -91,8 +108,8 @@ act_inference:
 #   ros2 run policy_runner ood_build_reference --ckpt <act_inference.ckpt_path>
 # which writes <ckpt_dir>/ood_reference/. It MUST match ckpt_path above.
 ood_monitor:
-  enabled: false
-  reference_dir: /home/asu/act/results/sweep_real_pick_yellow_bottle_20260902/confirm/combo_hedge/ood_reference
+  enabled: true
+  reference_dir: /home/asu/act/results/sweep_20260904/s3_top_wrist_s2/ood_reference
   knn_k: 5              # match ood_build_reference --knn-k, or the ratio-vs-train baseline is off
   umap_hz: 10.0         # live-point re-projection rate (UMAP.transform is the expensive part);
                         # k-NN distance updates every control tick regardless

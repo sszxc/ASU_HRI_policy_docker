@@ -39,7 +39,7 @@ from sensor_msgs.msg import CompressedImage, JointState
 from policy_runner.act_model import ACTChunkPolicy
 from policy_runner.image_codec import decode_compressed_color
 from policy_runner.mujoco_qpos_viz import JOINT_ORDER, MujocoQposViz
-from policy_runner.udp_joint_sender import UdpJointSender
+from policy_runner.udp_joint_sender import UdpJointSender, UdpPoseHandSender
 from policy_runner.web_monitor import load_config
 
 # rerun per-joint plots (--rerun): real observed qpos vs. policy's UDP-sent target,
@@ -79,10 +79,14 @@ class InferInputNode(Node):
     """Subscribes just the two training cameras + joint_states and caches the latest
     of each; the timed loop in main() reads it via latest_observation()."""
 
-    def __init__(self, config, rerun_enabled=False):
+    def __init__(self, config, camera_names, rerun_enabled=False):
         super().__init__("act_infer_mujoco")
         act_cfg = config["act_inference"]
-        self.camera_names = act_cfg["camera_names"]
+        # camera_names comes from the loaded checkpoint (see main()), not topics.yaml --
+        # different checkpoints train on different cameras. camera_topic_map is the
+        # fixed rig fact (logical name -> physical topic) and must cover whatever
+        # cameras any checkpoint you point ckpt_path at might need.
+        self.camera_names = camera_names
         self.online_timeout_ns = int(float(config["online_timeout_seconds"]) * 1e9)
         self.rerun_enabled = rerun_enabled
 
@@ -95,6 +99,11 @@ class InferInputNode(Node):
         self._callback_groups = []  # keep references alive -- rclpy doesn't hold them
 
         for cam_name in self.camera_names:
+            if cam_name not in act_cfg["camera_topic_map"]:
+                raise KeyError(
+                    f"checkpoint needs camera '{cam_name}' but act_inference.camera_topic_map "
+                    f"in topics.yaml has no entry for it"
+                )
             cam_key = act_cfg["camera_topic_map"][cam_name]
             topic = config["cameras"][cam_key]["topic"]
             topic = topic if topic.endswith("/compressed") else topic.rstrip("/") + "/compressed"
@@ -254,7 +263,18 @@ def main(args=None):
         f"device={policy.device} temporal_agg={policy.temporal_agg} "
         f"temporal_agg_newest={policy.temporal_agg_newest} action_repr={policy.action_repr}"
     )
-    viz = MujocoQposViz(act_cfg["mjcf_path"], launch_viewer=not cli.no_viewer)
+    is_task_space = policy.action_repr == "task_space"
+    mjcf_key = "mjcf_path_task_space" if is_task_space else "mjcf_path_joint_space"
+    if mjcf_key not in act_cfg:
+        raise ValueError(f"config act_inference.{mjcf_key} not set (see config/topics.yaml)")
+    print(f"[act_infer_mujoco] {mjcf_key} -> {act_cfg[mjcf_key]}")
+    viz = MujocoQposViz(
+        act_cfg[mjcf_key],
+        launch_viewer=not cli.no_viewer,
+        task_space=is_task_space,
+        control_hz=control_hz,
+        hand_joint_names=policy.hand_joint_names if is_task_space else None,
+    )
 
     if cli.rerun:
         init_rerun_joint_plots()
@@ -267,8 +287,13 @@ def main(args=None):
         udp_host = cli.udp_host or udp_cfg.get("host", "")
         udp_port = cli.udp_port or int(udp_cfg.get("port", 0) or 0)
         if udp_host and udp_port:
-            udp_sender = UdpJointSender(udp_host, udp_port, JOINT_ORDER)
-            print(f"[act_infer_mujoco] UDP joint output -> {udp_host}:{udp_port}")
+            if policy.action_repr == "task_space":
+                udp_sender = UdpPoseHandSender(udp_host, udp_port, policy.hand_joint_names)
+                print(f"[act_infer_mujoco] UDP pos+quat+hand output -> {udp_host}:{udp_port} "
+                      f"(task_space, no IK -- receiver solves arm joints itself)")
+            else:
+                udp_sender = UdpJointSender(udp_host, udp_port, JOINT_ORDER)
+                print(f"[act_infer_mujoco] UDP joint output -> {udp_host}:{udp_port}")
         else:
             print(
                 "[act_infer_mujoco] UDP joint output enabled but no host/port configured -- skipping "
@@ -276,7 +301,7 @@ def main(args=None):
             )
 
     rclpy.init(args=args)
-    node = InferInputNode(config, rerun_enabled=cli.rerun)
+    node = InferInputNode(config, policy.camera_names, rerun_enabled=cli.rerun)
     executor = MultiThreadedExecutor(num_threads=max(4, len(node.camera_names) + 2))
     executor.add_node(node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
@@ -285,7 +310,12 @@ def main(args=None):
     period_s = 1.0 / control_hz
     action_idx = 0
     infer_idx = 0
+    if is_task_space:
+        # Hand joints only -- pos/quat have no MJCF joint-range concept to clip against.
+        hand_range_idx = [JOINT_ORDER.index(n) for n in policy.hand_joint_names]
+        hand_joint_range = viz.joint_range[hand_range_idx]
     try:
+        start_time = time.monotonic()
         next_tick = time.monotonic()
         while rclpy.ok() and viz.is_running():
             obs = node.latest_observation()
@@ -294,7 +324,14 @@ def main(args=None):
             else:
                 qpos, images = obs
                 action = policy.next_action(qpos, images)
-                viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
+                if is_task_space:
+                    # action = pos(3)+quat_wxyz(4)+hand(18). Clip hand here (once) --
+                    # feeds both the viz's finger actuators and the UDP send below.
+                    pos, quat, hand = action[:3], action[3:7], action[7:]
+                    hand = np.clip(hand, hand_joint_range[:, 0], hand_joint_range[:, 1])
+                    viz.set_task_space_target(pos, quat, hand, shadow_qpos=qpos)
+                else:
+                    viz.set_qpos(action, shadow_qpos=qpos)  # shadow robot = real observed qpos
                 if ood is not None:
                     # Cheap: just hands the sample to the monitor's worker thread. Image
                     # features only refresh on did_infer ticks; in between the monitor
@@ -302,14 +339,17 @@ def main(args=None):
                     ood.update(qpos, policy.last_backbone_features if policy.did_infer else None)
                 action_idx += 1  # chunk/output -> next action to send: every tick, refresh in place
                 if udp_sender is not None:
-                    # Clip to the MJCF joint limits before it leaves for the real robot -- viz above
-                    # still shows the policy's raw output so an out-of-range action is visible.
-                    clipped_action = np.clip(action, viz.joint_range[:, 0], viz.joint_range[:, 1])
-                    udp_sender.send(clipped_action, sequence=action_idx)
-                    if cli.rerun:
-                        rr.set_time("wall_time", timestamp=time.time())
-                        for name, position in zip(JOINT_ORDER, clipped_action):
-                            rr.log(f"joints/{name}/target", rr.Scalars([float(position)]))
+                    if is_task_space:
+                        udp_sender.send(time.time(), time.monotonic() - start_time, pos, quat, hand)
+                    else:
+                        # Clip to the MJCF joint limits before it leaves for the real robot -- viz
+                        # above still shows the policy's raw output so an out-of-range action is visible.
+                        clipped_action = np.clip(action, viz.joint_range[:, 0], viz.joint_range[:, 1])
+                        udp_sender.send(clipped_action, sequence=action_idx)
+                        if cli.rerun:
+                            rr.set_time("wall_time", timestamp=time.time())
+                            for name, position in zip(JOINT_ORDER, clipped_action):
+                                rr.log(f"joints/{name}/target", rr.Scalars([float(position)]))
                 if policy.did_infer:  # camera+qpos -> model query: rare, log as its own line
                     infer_idx += 1
                     print(f"\n[act_infer_mujoco] INFER #{infer_idx} (action #{action_idx})")
