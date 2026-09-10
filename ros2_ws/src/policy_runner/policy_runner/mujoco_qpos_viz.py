@@ -70,9 +70,11 @@ class MujocoQposViz:
             # same order as JOINT_ORDER[6:] (see forward_kinematics.JOINT_NAMES).
             hand_joint_names = list(hand_joint_names)
             wrist_names, finger_names = hand_joint_names[:2], hand_joint_names[2:]
-            self.wrist_qpos_addr = np.array([self.model.joint(n).qposadr[0] for n in wrist_names])
-            self.wrist_dof_addr = np.array([self.model.joint(n).dofadr[0] for n in wrist_names])
-            self.finger_actuator_ids = np.array([self.model.actuator(f"{n}_ctrl").id for n in finger_names])
+            # dtype=int explicit: np.array([]) on an empty list (e.g. a wrist-only checkpoint
+            # with no finger joint_ids) defaults to float64, which breaks use as an index.
+            self.wrist_qpos_addr = np.array([self.model.joint(n).qposadr[0] for n in wrist_names], dtype=int)
+            self.wrist_dof_addr = np.array([self.model.joint(n).dofadr[0] for n in wrist_names], dtype=int)
+            self.finger_actuator_ids = np.array([self.model.actuator(f"{n}_ctrl").id for n in finger_names], dtype=int)
             self.shadow_actuator_ids = np.array([self.model.actuator(f"Shadow_{n}_ctrl").id for n in JOINT_ORDER])
             self.mocap_id = self.model.body("mocap").mocapid[0]
             # Sub-step physics to fill exactly one control period, so the weld's constraint

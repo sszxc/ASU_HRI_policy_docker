@@ -44,15 +44,33 @@ class ACTChunkPolicy:
         ckpt_dir = os.path.dirname(ckpt_path)
         with open(os.path.join(ckpt_dir, "config_hydra_resolved.yaml")) as f:
             hydra_cfg = yaml.safe_load(f)
+        # dataset_stats.pkl loaded early: it's the authoritative source for joint_ids and
+        # action_repr. config_hydra_resolved.yaml's own joint_ids/state_dim/action_dim are
+        # null on every run that sets them via a plain-list CLI override (a Hydra resolution
+        # quirk, not a "run didn't use them" signal) -- imitate_episodes.py itself only ever
+        # derives state_dim/action_dim from joint_ids in-memory, never writes them back to the
+        # resolved config, and its own eval/replay scripts (replay_eval.py, eval_common_horizon.py)
+        # read joint_ids from dataset_stats.pkl for the same reason.
+        with open(os.path.join(ckpt_dir, "dataset_stats.pkl"), "rb") as f:
+            self.stats = pickle.load(f)
+        # act/imitate_episodes.py trains some runs to predict action - qpos ("delta") instead
+        # of the raw action ("absolute"); dataset_stats.pkl records which. Denormalizing a
+        # delta checkpoint's output with action_mean/action_std (as if it were absolute)
+        # silently produces a target near the training set's mean qpos, unrelated to the
+        # robot's actual current position or the scene -- see act/eval_deploy_metrics.py's
+        # denorm() / imitate_episodes.py's post_process for the reference implementation.
+        self.action_repr = self.stats.get("action_repr", "absolute")
 
         task_config = TASK_CONFIGS[hydra_cfg["task_name"]]
         # camera_names is a per-run Hydra CLI override (config_hydra_resolved.yaml carries
         # the actual training cameras); TASK_CONFIGS only has the task's default, which
         # drifts across sweeps that override cameras under the same task_name.
         self.camera_names = hydra_cfg.get("camera_names") or task_config["camera_names"]
-        # constants.py's DATA_DIR is relative to the act repo root; make it absolute
+        # dataset_dir is a per-run Hydra CLI override too (same drift as camera_names above);
+        # constants.py's DATA_DIR is relative to the act repo root, so make it absolute
         # so ood_reference_builder.py can default --data-dir to it from anywhere.
-        self.dataset_dir = os.path.join(os.path.expanduser(act_repo_root), task_config["dataset_dir"])
+        dataset_dir = hydra_cfg.get("dataset_dir") or task_config["dataset_dir"]
+        self.dataset_dir = os.path.join(os.path.expanduser(act_repo_root), dataset_dir)
         # (H, W) training resized every camera to before stacking (act/utils.py
         # load_cam_images) -- cameras differ in native resolution, so live inference
         # must match or np.stack fails. None means training didn't resize (cameras
@@ -60,19 +78,21 @@ class ACTChunkPolicy:
         self.image_size = hydra_cfg.get("image_size")
         # joint_ids: set when the checkpoint was trained on a subset of JOINT_NAMES (e.g. the
         # 8 arm+wrist joints, dropping the 16 finger joints -- see act/utils.py EpisodicDataset).
-        # Mirrors imitate_episodes.py's own state_dim/action_dim derivation: a joint_ids run
-        # leaves state_dim/action_dim null in its hydra config (they're derived from
-        # len(joint_ids) at train time, not passed explicitly), so this must be read and
-        # applied before state_dim/action_dim below, or the model gets built with the wrong
-        # (task-default) head size and the checkpoint fails to load.
-        joint_ids = hydra_cfg.get("joint_ids")
+        joint_ids = self.stats.get("joint_ids")
         self.joint_ids = np.asarray(joint_ids, dtype=int) if joint_ids is not None else None
-        # state_dim/action_dim: prefer the run's own resolved config over TASK_CONFIGS -- a
-        # task_space run overrides these via CLI (state_dim=27 action_dim=27, see act/README),
-        # which TASK_CONFIGS (fixed per task_name) has no way to reflect.
+        # state_dim/action_dim: mirrors imitate_episodes.py's own derivation exactly. A
+        # task_space + joint_ids run fuses the arm into the palm pose (POSE_DIM, always) and
+        # keeps only the joint_ids-selected trailing wrist/finger dims on top (see
+        # _task_space_keep_idx); joint_ids alone (no task_space) just narrows the raw joint
+        # vector; neither is derivable from the (always-null, see above) hydra config.
         self.state_dim = hydra_cfg.get("state_dim") or task_config["state_dim"]
         self.action_dim = hydra_cfg.get("action_dim") or task_config.get("action_dim", self.state_dim)
-        if self.joint_ids is not None:
+        if self.action_repr == "task_space":
+            self.state_dim = self.action_dim = (
+                len(self._task_space_keep_idx(self.joint_ids)) if self.joint_ids is not None
+                else forward_kinematics.TASKSPACE_DIM
+            )
+        elif self.joint_ids is not None:
             self.state_dim = self.action_dim = len(self.joint_ids)
         self.chunk_size = hydra_cfg["chunk_size"]
 
@@ -105,19 +125,16 @@ class ACTChunkPolicy:
         self.policy.to(self.device)
         self.policy.eval()
 
-        with open(os.path.join(ckpt_dir, "dataset_stats.pkl"), "rb") as f:
-            self.stats = pickle.load(f)
-        # act/imitate_episodes.py trains some runs to predict action - qpos ("delta") instead
-        # of the raw action ("absolute"); dataset_stats.pkl records which. Denormalizing a
-        # delta checkpoint's output with action_mean/action_std (as if it were absolute)
-        # silently produces a target near the training set's mean qpos, unrelated to the
-        # robot's actual current position or the scene -- see act/eval_deploy_metrics.py's
-        # denorm() / imitate_episodes.py's post_process for the reference implementation.
-        self.action_repr = self.stats.get("action_repr", "absolute")
-        # task_space: next_action() returns pos(3)+quat_wxyz(4)+hand(18) instead of joint
-        # targets (see _post_action) -- these are the hand's 18 joint names, in the order
-        # that trailing block comes out in.
-        self.hand_joint_names = list(forward_kinematics.JOINT_NAMES[forward_kinematics.N_ARM:])
+        # task_space: next_action() returns pos(3)+quat_wxyz(4)+hand instead of joint targets
+        # (see _post_action) -- these are the hand's joint names, in the order that trailing
+        # block comes out in. joint_ids (arm-only) drops some of the 18 to just the ones kept
+        # by _task_space_keep_idx; without joint_ids all 18 survive.
+        if self.joint_ids is not None:
+            self.hand_joint_names = [
+                forward_kinematics.JOINT_NAMES[j] for j in self.joint_ids if j >= forward_kinematics.N_ARM
+            ]
+        else:
+            self.hand_joint_names = list(forward_kinematics.JOINT_NAMES[forward_kinematics.N_ARM:])
 
         self.temporal_agg = temporal_agg
         self.temporal_agg_k = temporal_agg_k
@@ -125,6 +142,7 @@ class ACTChunkPolicy:
 
         self._chunk = None  # (chunk_size, action_dim) raw actions, buffered from the last query
         self._chunk_step = 0
+        self._chunk_reference = None  # _reference_state(qpos) cached at the last query time
         self._chunk_buffer = deque(maxlen=self.chunk_size)  # temporal_agg only: [(start_step, chunk), ...]
         self._step = 0  # temporal_agg only: running query counter
 
@@ -148,13 +166,22 @@ class ACTChunkPolicy:
     def _pre_qpos(self, qpos):
         return (qpos - self.stats["qpos_mean"]) / self.stats["qpos_std"]
 
+    def _task_space_keep_idx(self, joint_ids):
+        """Mirrors act/utils.py's _task_space_keep_idx: the arm is always fused whole into the
+        palm pose, so joint_ids only selects which of the trailing (POSE_DIM-onward) wrist/finger
+        dims of the 27-dim FK'd state/action survive."""
+        hand_keep = [j - self._fk.N_ARM for j in joint_ids if j >= self._fk.N_ARM]
+        return np.array(list(range(self._fk.POSE_DIM)) + [self._fk.POSE_DIM + h for h in hand_keep], dtype=int)
+
     def _reference_state(self, qpos):
         """The value action/delta targets are expressed relative to: the FK'd task-space
-        state (pos+rot6d+hand, 27-dim) for task_space, else the plain robot-qpos slice
-        (joint_ids subset, if the checkpoint was trained on one)."""
+        state (pos+rot6d+hand, 27-dim, trimmed by joint_ids if the checkpoint was trained on
+        an arm-only subset) for task_space, else the plain robot-qpos slice (joint_ids subset,
+        if any)."""
         qpos = np.asarray(qpos, dtype=np.float32)
         if self.action_repr == "task_space":
-            return self._fk.task_state(qpos)
+            state = self._fk.task_state(qpos)
+            return state[self._task_space_keep_idx(self.joint_ids)] if self.joint_ids is not None else state
         if self.joint_ids is not None:
             return qpos[self.joint_ids]
         return qpos[: self.action_dim]
@@ -176,8 +203,10 @@ class ACTChunkPolicy:
 
     def _expand_joint_ids(self, action, qpos):
         """joint_ids checkpoints predict only those joints; every other joint (e.g. the 16
-        finger joints on an arm+wrist-only checkpoint) holds at its current live qpos."""
-        if self.joint_ids is None:
+        finger joints on an arm+wrist-only checkpoint) holds at its current live qpos.
+        Not applicable to task_space -- its action is already pos+quat+hand (see
+        _post_action/hand_joint_names), not a vector indexed by joint_ids."""
+        if self.joint_ids is None or self.action_repr == "task_space":
             return action
         full = np.asarray(qpos, dtype=np.float64).copy()
         full[self.joint_ids] = action
@@ -188,6 +217,8 @@ class ACTChunkPolicy:
         qpos_raw = np.asarray(qpos, dtype=np.float32)
         if self.action_repr == "task_space":
             qpos_raw = self._fk.task_state(qpos_raw)  # 24-dim robot qpos -> 27-dim state
+            if self.joint_ids is not None:
+                qpos_raw = qpos_raw[self._task_space_keep_idx(self.joint_ids)]
         elif self.joint_ids is not None:
             qpos_raw = qpos_raw[self.joint_ids]
         else:
@@ -221,8 +252,8 @@ class ACTChunkPolicy:
         images_by_camera: {camera_name: HxWx3 uint8 RGB ndarray}, one entry per
         self.camera_names. Returns raw (unnormalized) joint targets, (24,) -- joint_ids
         checkpoints have the predicted subset written into qpos's current reading (see
-        _expand_joint_ids) -- except for task_space, which returns pos(3)+quat_wxyz(4)+
-        hand(18) (see hand_joint_names for the trailing block's joint order), no IK applied."""
+        _expand_joint_ids) -- except for task_space, which returns pos(3)+quat_wxyz(4)+hand
+        (see hand_joint_names for the trailing block's joint order/length), no IK applied."""
         if self.temporal_agg:
             return self._next_action_temporal_agg(qpos, images_by_camera)
         return self._next_action_chunked(qpos, images_by_camera)
@@ -232,9 +263,15 @@ class ACTChunkPolicy:
         if self.did_infer:
             self._chunk = self._query_chunk(qpos, images_by_camera)
             self._chunk_step = 0
+            # Cache the reference at query time -- act/utils.py's delta target is
+            # `action - qpos[start_ts]`, ONE reference broadcast over the whole chunk, not a
+            # per-step one. Recomputing _reference_state(qpos) on every call (as this used to)
+            # fed later chunk steps a reference that had drifted from the query-time qpos,
+            # silently breaking the trained delta semantics after step 0 of every chunk.
+            self._chunk_reference = self._reference_state(qpos)
         raw_action = self._chunk[self._chunk_step]
         self._chunk_step += 1
-        action = self._post_action(raw_action, self._reference_state(qpos))
+        action = self._post_action(raw_action, self._chunk_reference)
         return self._expand_joint_ids(action, qpos)
 
     def _next_action_temporal_agg(self, qpos, images_by_camera):
@@ -246,7 +283,11 @@ class ACTChunkPolicy:
         `act/imitate_episodes.py`'s `--temporal_agg_newest`): measured there at -47.5% mean
         command error with k=0.5, no retraining needed.
         Delta reconstruction (`_post_action`) happens once, after averaging, using qpos at
-        the CURRENT step -- matches imitate_episodes.py's post_process(raw_action, qpos_numpy)."""
+        the CURRENT step -- correct here because every step re-queries (query_frequency=1), so
+        the current qpos IS that query's start reference; matches imitate_episodes.py's
+        post_process(raw_action, chunk_reference_qpos), which is refreshed every step for the
+        same reason. See `_next_action_chunked` for the non-temporal_agg case, where the
+        reference must instead be cached and held fixed across a whole open-loop chunk."""
         self.did_infer = True  # always queries -- kept for a uniform did_infer check regardless of mode
         chunk = self._query_chunk(qpos, images_by_camera)
         step = self._step

@@ -82,9 +82,11 @@ act_inference:
   # ~/Honda_proto5_description; this node only ever runs in-container).
 
   # shows motion_ratio=1.03 (best amplitude match) and track_corr=0.169 (near the sweep's peak).
-  # ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d1_good41_kl10_bs128/policy_epoch_400_seed_0.ckpt
-  ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d2_scripted50_kl10_bs128/policy_epoch_400_seed_0.ckpt
-  # ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d3_mix91_kl10_bs128/policy_epoch_400_seed_0.ckpt
+  # ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d1_good41_kl10_bs128/policy_epoch_2000_seed_0.ckpt
+  ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d2_scripted50_kl10_bs128/policy_epoch_2000_seed_0.ckpt
+  # ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d3_mix91_kl10_bs128/policy_epoch_2000_seed_0.ckpt
+  # ckpt_path: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d2_taskspace_armonly_kl10_bs128/policy_epoch_1200_seed_0.ckpt
+  
 
   act_repo_root: /home/asu/act
   # act_infer_mujoco.py picks one of these based on the loaded checkpoint's action_repr
@@ -109,8 +111,8 @@ act_inference:
 #   ros2 run policy_runner ood_build_reference --ckpt <act_inference.ckpt_path>
 # which writes <ckpt_dir>/ood_reference/. It MUST match ckpt_path above.
 ood_monitor:
-  enabled: false
-  reference_dir: /home/asu/act/results/sweep_20260904/s3_top_wrist_s2/ood_reference
+  enabled: true
+  reference_dir: /home/asu/act/results/resynced_longrun_datasets_20260909/resynced_d2_scripted50_kl10_bs128/ood_reference
   knn_k: 5              # match ood_build_reference --knn-k, or the ratio-vs-train baseline is off
   umap_hz: 10.0         # live-point re-projection rate (UMAP.transform is the expensive part);
                         # k-NN distance updates every control tick regardless
