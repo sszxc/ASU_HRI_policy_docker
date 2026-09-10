@@ -58,11 +58,22 @@ class ACTChunkPolicy:
         # must match or np.stack fails. None means training didn't resize (cameras
         # already matched).
         self.image_size = hydra_cfg.get("image_size")
+        # joint_ids: set when the checkpoint was trained on a subset of JOINT_NAMES (e.g. the
+        # 8 arm+wrist joints, dropping the 16 finger joints -- see act/utils.py EpisodicDataset).
+        # Mirrors imitate_episodes.py's own state_dim/action_dim derivation: a joint_ids run
+        # leaves state_dim/action_dim null in its hydra config (they're derived from
+        # len(joint_ids) at train time, not passed explicitly), so this must be read and
+        # applied before state_dim/action_dim below, or the model gets built with the wrong
+        # (task-default) head size and the checkpoint fails to load.
+        joint_ids = hydra_cfg.get("joint_ids")
+        self.joint_ids = np.asarray(joint_ids, dtype=int) if joint_ids is not None else None
         # state_dim/action_dim: prefer the run's own resolved config over TASK_CONFIGS -- a
         # task_space run overrides these via CLI (state_dim=27 action_dim=27, see act/README),
         # which TASK_CONFIGS (fixed per task_name) has no way to reflect.
         self.state_dim = hydra_cfg.get("state_dim") or task_config["state_dim"]
         self.action_dim = hydra_cfg.get("action_dim") or task_config.get("action_dim", self.state_dim)
+        if self.joint_ids is not None:
+            self.state_dim = self.action_dim = len(self.joint_ids)
         self.chunk_size = hydra_cfg["chunk_size"]
 
         policy_config = {
@@ -139,10 +150,13 @@ class ACTChunkPolicy:
 
     def _reference_state(self, qpos):
         """The value action/delta targets are expressed relative to: the FK'd task-space
-        state (pos+rot6d+hand, 27-dim) for task_space, else the plain robot-qpos slice."""
+        state (pos+rot6d+hand, 27-dim) for task_space, else the plain robot-qpos slice
+        (joint_ids subset, if the checkpoint was trained on one)."""
         qpos = np.asarray(qpos, dtype=np.float32)
         if self.action_repr == "task_space":
             return self._fk.task_state(qpos)
+        if self.joint_ids is not None:
+            return qpos[self.joint_ids]
         return qpos[: self.action_dim]
 
     def _post_action(self, action, qpos_raw):
@@ -160,11 +174,22 @@ class ACTChunkPolicy:
             return action * self.stats["delta_std"] + self.stats["delta_mean"] + qpos_raw
         return action * self.stats["action_std"] + self.stats["action_mean"]
 
+    def _expand_joint_ids(self, action, qpos):
+        """joint_ids checkpoints predict only those joints; every other joint (e.g. the 16
+        finger joints on an arm+wrist-only checkpoint) holds at its current live qpos."""
+        if self.joint_ids is None:
+            return action
+        full = np.asarray(qpos, dtype=np.float64).copy()
+        full[self.joint_ids] = action
+        return full
+
     def _query_chunk(self, qpos, images_by_camera):
         """Runs the model once, returns the raw (chunk_size, action_dim) predicted chunk."""
         qpos_raw = np.asarray(qpos, dtype=np.float32)
         if self.action_repr == "task_space":
             qpos_raw = self._fk.task_state(qpos_raw)  # 24-dim robot qpos -> 27-dim state
+        elif self.joint_ids is not None:
+            qpos_raw = qpos_raw[self.joint_ids]
         else:
             qpos_raw = qpos_raw[: self.state_dim]
         qpos_n = self._pre_qpos(qpos_raw)
@@ -190,12 +215,14 @@ class ACTChunkPolicy:
 
     @torch.inference_mode()
     def next_action(self, qpos, images_by_camera):
-        """qpos: (state_dim,) array, robot joint order (JOINT_NAMES/JOINT_ORDER for
-        task_space -- FK needs the actual joint layout, not just state_dim of it).
+        """qpos: full (24,) array, JOINT_NAMES/JOINT_ORDER order -- always the whole robot,
+        not just state_dim of it (task_space needs it for FK; joint_ids checkpoints need it
+        to hold the untrained joints, e.g. fingers, at their current reading).
         images_by_camera: {camera_name: HxWx3 uint8 RGB ndarray}, one entry per
-        self.camera_names. Returns raw (unnormalized) joint targets, (action_dim,) --
-        except for task_space, which returns pos(3)+quat_wxyz(4)+hand(18) (see
-        hand_joint_names for the trailing block's joint order), no IK applied."""
+        self.camera_names. Returns raw (unnormalized) joint targets, (24,) -- joint_ids
+        checkpoints have the predicted subset written into qpos's current reading (see
+        _expand_joint_ids) -- except for task_space, which returns pos(3)+quat_wxyz(4)+
+        hand(18) (see hand_joint_names for the trailing block's joint order), no IK applied."""
         if self.temporal_agg:
             return self._next_action_temporal_agg(qpos, images_by_camera)
         return self._next_action_chunked(qpos, images_by_camera)
@@ -207,7 +234,8 @@ class ACTChunkPolicy:
             self._chunk_step = 0
         raw_action = self._chunk[self._chunk_step]
         self._chunk_step += 1
-        return self._post_action(raw_action, self._reference_state(qpos))
+        action = self._post_action(raw_action, self._reference_state(qpos))
+        return self._expand_joint_ids(action, qpos)
 
     def _next_action_temporal_agg(self, qpos, images_by_camera):
         """Query every step; average this step's predictions from every still-relevant
@@ -230,4 +258,5 @@ class ACTChunkPolicy:
         weights = np.exp(-self.temporal_agg_k * order)
         weights /= weights.sum()
         raw_action = np.sum(np.stack(preds) * weights[:, None], axis=0)
-        return self._post_action(raw_action, self._reference_state(qpos))
+        action = self._post_action(raw_action, self._reference_state(qpos))
+        return self._expand_joint_ids(action, qpos)
